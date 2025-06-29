@@ -79,9 +79,13 @@ RUN pip install --no-cache-dir *.whl /wheels/* --no-index --find-links=/wheels/ 
 RUN prisma generate && \
     chmod +x docker/entrypoint.sh docker/prod_entrypoint.sh
 
+# Copy config
+
+COPY litellm_config.yaml config.yaml
+
 EXPOSE 4000/tcp
 
 ENTRYPOINT ["docker/prod_entrypoint.sh"]
 
 # Append "--detailed_debug" to the end of CMD to view detailed debug logs 
-CMD ["--port", "4000"]
+CMD ["--port", "4000", "--config", "/app/config.yaml"]
