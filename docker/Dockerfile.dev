@@ -82,6 +82,7 @@ RUN prisma generate && \
 # Copy config
 
 COPY litellm_config.yaml config.yaml
+COPY custom_callbacks.py custom_callbacks.py
 
 EXPOSE 4000/tcp
 

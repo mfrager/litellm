@@ -13,6 +13,19 @@ services:
     networks:
       - langfuse_default
 
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest # Or a specific version like :0.16.40
+    command: "start --addresses=0.0.0.0:3033 /data/0_0.tigerbeetle"
+    cap_add:
+      - IPC_LOCK # Required for TigerBeetle's performance and safety
+    ports:
+      - "3033:3033"
+    security_opt:
+      - "seccomp=unconfined"
+    volumes:
+      - "./data:/data" # Persist data outside the container
+
 networks:
   langfuse_default:
     external: true
+
