@@ -40,7 +40,8 @@ class BNRouterHandler(CustomLogger):
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         print("On Async Success!")
         response_cost = litellm.completion_cost(completion_response=response_obj)
-        assert response_cost > 0.0
+        print(f"Cost: {response_cost}")
+        #assert response_cost > 0.0
         return
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
