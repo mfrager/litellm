@@ -4,12 +4,8 @@ from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 
 from .base import Base
+from .common import CommonBase
 from .functions import generate_ulid, generate_utcnow
-
-class CommonBase():
-    """Base class containing common row metadata for all tables."""
-    ts_created = Column(DateTime, default=generate_utcnow, nullable=False, comment="Date the record was created")
-    ts_updated = Column(DateTime, default=generate_utcnow, onupdate=generate_utcnow, nullable=False, comment="Last date the record was updated")
 
 class Workspace(CommonBase, Base):
     __tablename__ = 'router_workspace'

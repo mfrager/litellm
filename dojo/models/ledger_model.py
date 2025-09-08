@@ -17,7 +17,7 @@ from .base import Base
 from .common import CommonBase
 
 
-class SQLAccount(CommonBase):
+class SQLAccount(CommonBase, Base):
   """SQLAlchemy model for ledger accounts"""
   __tablename__ = 'ledger_accounts'
   

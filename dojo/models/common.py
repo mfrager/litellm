@@ -1,4 +1,4 @@
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, Column
 
 from .functions import generate_utcnow
 

@@ -2,14 +2,18 @@ import os
 import sys
 import inspect
 import logging
-import traceback
-
 import litellm
+import traceback
+from pathlib import Path
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from litellm.proxy.proxy_server import UserAPIKeyAuth, DualCache
 from litellm.integrations.custom_logger import CustomLogger
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+dojo_path = Path(__file__).resolve().parent / "dojo"
+sys.path.insert(0, str(dojo_path))
+
+from ledger.sql_ledger import SQLLedgerAPI
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:\t%(message)s")
 
