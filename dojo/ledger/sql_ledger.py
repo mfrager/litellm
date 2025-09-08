@@ -10,7 +10,7 @@ from ulid import ULID
 from decimal import Decimal
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from typing import List, Optional, Union, Dict, Any
 
 from models.ledger_model import (
@@ -100,13 +100,11 @@ class SQLLedgerAPI(LedgerAPI):
     
     for account_tx in account_list:
       for account in account_tx.accounts:
-        # Convert string ID to ULID bytes, or generate new ULID if needed
-        account_id_bytes = ensure_ulid_bytes(account.id)
-        if account_id_bytes is None:
-          account_id_bytes = ULID().bytes
+        # Convert string ID to ULID string, or generate new ULID if needed
+        account_id = str(account.id) if account.id else str(ULID())
         
         sql_account = SQLAccount(
-          id=account_id_bytes,
+          id=account_id,
           name=account.name,
           account_type=account.account_type.value,
           side=account.side.value,
@@ -128,21 +126,19 @@ class SQLLedgerAPI(LedgerAPI):
     
     for entry_tx in entry_list:
       for entry in entry_tx.entries:
-        # Convert string IDs to ULID bytes
-        entry_id_bytes = ensure_ulid_bytes(entry.id)
-        if entry_id_bytes is None:
-          entry_id_bytes = ULID().bytes
+        # Convert string IDs to ULID strings
+        entry_id = str(entry.id) if entry.id else str(ULID())
         
-        account_id_bytes = ensure_ulid_bytes(entry.account_id)
-        transaction_id_bytes = ensure_ulid_bytes(entry.transaction_id) if entry.transaction_id else None
+        account_id = entry.account_id
+        transaction_id = str(entry.transaction_id) if entry.transaction_id else None
         
         sql_entry = SQLJournalEntry(
-          id=entry_id_bytes,
-          account_id=account_id_bytes,
+          id=entry_id,
+          account_id=account_id,
           debit=entry.debit,
           credit=entry.credit,
-          timestamp=entry.timestamp,
-          transaction_id=transaction_id_bytes,
+          ts_created=entry.ts_created,
+          transaction_id=transaction_id,
           description=entry.description
         )
         session.add(sql_entry)
@@ -155,36 +151,34 @@ class SQLLedgerAPI(LedgerAPI):
     
     for transfer_tx in transfer_list:
       for transfer in transfer_tx.transfers:
-        # Convert string IDs to ULID bytes
-        transfer_id_bytes = ensure_ulid_bytes(transfer.id)
-        if transfer_id_bytes is None:
-          transfer_id_bytes = ULID().bytes
+        # Convert string IDs to ULID strings
+        transfer_id = str(transfer.id) if transfer.id else str(ULID())
         
-        debit_account_id_bytes = ensure_ulid_bytes(transfer.debit_account_id)
-        credit_account_id_bytes = ensure_ulid_bytes(transfer.credit_account_id)
-        transaction_id_bytes = ensure_ulid_bytes(transfer.transaction_id) if transfer.transaction_id else None
+        debit_account_id = transfer.debit_account_id
+        credit_account_id = transfer.credit_account_id
+        transaction_id = str(transfer.transaction_id) if transfer.transaction_id else None
         
         # Create the transfer record
         sql_transfer = SQLTransfer(
-          id=transfer_id_bytes,
-          debit_account_id=debit_account_id_bytes,
-          credit_account_id=credit_account_id_bytes,
+          id=transfer_id,
+          debit_account_id=debit_account_id,
+          credit_account_id=credit_account_id,
           amount=transfer.amount,
-          timestamp=transfer.timestamp,
-          transaction_id=transaction_id_bytes
+          ts_created=transfer.ts_created,
+          transaction_id=transaction_id
         )
         session.add(sql_transfer)
         
         # Create the account transaction (triggers will update balances)
-        account_tx_id_bytes = ULID().bytes
+        account_tx_id = str(ULID())
         account_tx = SQLAccountTransaction(
-          id=account_tx_id_bytes,
-          src_id=credit_account_id_bytes,  # Source is credit account
-          dst_id=debit_account_id_bytes,   # Destination is debit account
+          id=account_tx_id,
+          src_id=credit_account_id,  # Source is credit account
+          dst_id=debit_account_id,   # Destination is debit account
           amount=transfer.amount,
-          ts=datetime.now(timezone.utc),
-          transaction_id=transaction_id_bytes,
-          description=f"Transfer {bytes_to_ulid(transfer_id_bytes)}"
+          ts_created=datetime.now(timezone.utc),
+          transaction_id=transaction_id,
+          description=f"Transfer {transfer_id}"
         )
         session.add(account_tx)
     
@@ -194,11 +188,10 @@ class SQLLedgerAPI(LedgerAPI):
     """Fetch accounts by ID."""
     session = self.get_session()
     
-    # Convert all IDs to bytes format
-    bytes_ids = [ensure_ulid_bytes(str(aid)) for aid in account_ids]
-    bytes_ids = [bid for bid in bytes_ids if bid is not None]  # Filter out None values
+    # Convert all IDs to string format
+    ids = [str(aid) for aid in account_ids]
     
-    sql_accounts = session.query(SQLAccount).filter(SQLAccount.id.in_(bytes_ids)).all()
+    sql_accounts = session.query(SQLAccount).filter(SQLAccount.id.in_(ids)).all()
     
     return [self._convert_sql_account_to_ledger_account(acc) for acc in sql_accounts]
   
@@ -206,11 +199,10 @@ class SQLLedgerAPI(LedgerAPI):
     """Fetch transfers by ID."""
     session = self.get_session()
     
-    # Convert all IDs to bytes format
-    bytes_ids = [ensure_ulid_bytes(str(tid)) for tid in transfer_ids]
-    bytes_ids = [bid for bid in bytes_ids if bid is not None]  # Filter out None values
+    # Convert all IDs to string format
+    ids = [str(tid) for tid in transfer_ids]
     
-    sql_transfers = session.query(SQLTransfer).filter(SQLTransfer.id.in_(bytes_ids)).all()
+    sql_transfers = session.query(SQLTransfer).filter(SQLTransfer.id.in_(ids)).all()
     
     return [self._convert_sql_transfer_to_ledger_transfer(transfer, with_balance=with_balance) for transfer in sql_transfers]
   
@@ -219,11 +211,10 @@ class SQLLedgerAPI(LedgerAPI):
     """Fetch transactions by ID."""
     session = self.get_session()
     
-    # Convert all IDs to bytes format
-    bytes_ids = [ensure_ulid_bytes(str(tid)) for tid in transaction_ids]
-    bytes_ids = [bid for bid in bytes_ids if bid is not None]  # Filter out None values
+    # Convert all IDs to string format
+    ids = [str(tid) for tid in transaction_ids]
     
-    sql_transactions = session.query(SQLTransaction).filter(SQLTransaction.id.in_(bytes_ids)).all()
+    sql_transactions = session.query(SQLTransaction).filter(SQLTransaction.id.in_(ids)).all()
     
     return [self._convert_sql_transaction_to_ledger_transaction(tx, journal, transfers) 
         for tx in sql_transactions]
@@ -232,11 +223,10 @@ class SQLLedgerAPI(LedgerAPI):
     """Fetch journal entries by ID."""
     session = self.get_session()
     
-    # Convert all IDs to bytes format
-    bytes_ids = [ensure_ulid_bytes(str(eid)) for eid in entry_ids]
-    bytes_ids = [bid for bid in bytes_ids if bid is not None]  # Filter out None values
+    # Convert all IDs to string format
+    ids = [str(eid) for eid in entry_ids]
     
-    sql_entries = session.query(SQLJournalEntry).filter(SQLJournalEntry.id.in_(bytes_ids)).all()
+    sql_entries = session.query(SQLJournalEntry).filter(SQLJournalEntry.id.in_(ids)).all()
     
     return [self._convert_sql_entry_to_ledger_entry(entry) for entry in sql_entries]
   
@@ -247,18 +237,17 @@ class SQLLedgerAPI(LedgerAPI):
     query = session.query(SQLTransfer)
     
     if filter.get('account_id'):
-      account_id_bytes = ensure_ulid_bytes(str(filter['account_id']))
-      if account_id_bytes:
-        query = query.filter(
-          (SQLTransfer.debit_account_id == account_id_bytes) | 
-          (SQLTransfer.credit_account_id == account_id_bytes)
-        )
+      account_id = str(filter['account_id'])
+      query = query.filter(
+        (SQLTransfer.debit_account_id == account_id) | 
+        (SQLTransfer.credit_account_id == account_id)
+      )
     
     if filter.get('timestamp_min'):
-      query = query.filter(SQLTransfer.timestamp >= filter['timestamp_min'])
+      query = query.filter(SQLTransfer.ts_created >= filter['timestamp_min'])
     
     if filter.get('timestamp_max'):
-      query = query.filter(SQLTransfer.timestamp <= filter['timestamp_max'])
+      query = query.filter(SQLTransfer.ts_created <= filter['timestamp_max'])
     
     if filter.get('limit'):
       query = query.limit(filter['limit'])
@@ -276,21 +265,20 @@ class SQLLedgerAPI(LedgerAPI):
     query = session.query(SQLAccountBalance)
     
     if filter.get('account_id'):
-      account_id_bytes = ensure_ulid_bytes(str(filter['account_id']))
-      if account_id_bytes:
-        query = query.filter(SQLAccountBalance.account_id == account_id_bytes)
+      account_id = str(filter['account_id'])
+      query = query.filter(SQLAccountBalance.account_id == account_id)
     
     if filter.get('timestamp_min'):
       # Convert timestamp to datetime for comparison
       min_dt = datetime.fromtimestamp(filter['timestamp_min'])
-      query = query.filter(SQLAccountBalance.ts >= min_dt)
+      query = query.filter(SQLAccountBalance.ts_created >= min_dt)
     
     if filter.get('timestamp_max'):
       max_dt = datetime.fromtimestamp(filter['timestamp_max'])
-      query = query.filter(SQLAccountBalance.ts <= max_dt)
+      query = query.filter(SQLAccountBalance.ts_created <= max_dt)
     
     # Order by timestamp (most recent first) BEFORE applying limit/offset
-    query = query.order_by(SQLAccountBalance.ts.desc())
+    query = query.order_by(SQLAccountBalance.ts_created.desc())
     
     if filter.get('limit'):
       query = query.limit(filter['limit'])
@@ -309,9 +297,8 @@ class SQLLedgerAPI(LedgerAPI):
     q = session.query(SQLAccount)
     
     if query.get('account_id'):
-      account_id_bytes = ensure_ulid_bytes(str(query['account_id']))
-      if account_id_bytes:
-        q = q.filter(SQLAccount.id == account_id_bytes)
+      account_id = str(query['account_id'])
+      q = q.filter(SQLAccount.id == account_id)
     
     if query.get('owner_id'):
       q = q.filter(SQLAccount.owner_id == query['owner_id'])
@@ -332,28 +319,25 @@ class SQLLedgerAPI(LedgerAPI):
     q = session.query(SQLTransfer)
     
     if query.get('transfer_id'):
-      transfer_id_bytes = ensure_ulid_bytes(str(query['transfer_id']))
-      if transfer_id_bytes:
-        q = q.filter(SQLTransfer.id == transfer_id_bytes)
+      transfer_id = str(query['transfer_id'])
+      q = q.filter(SQLTransfer.id == transfer_id)
     
     if query.get('account_id'):
-      account_id_bytes = ensure_ulid_bytes(str(query['account_id']))
-      if account_id_bytes:
-        q = q.filter(
-          (SQLTransfer.debit_account_id == account_id_bytes) | 
-          (SQLTransfer.credit_account_id == account_id_bytes)
-        )
+      account_id = str(query['account_id'])
+      q = q.filter(
+        (SQLTransfer.debit_account_id == account_id) | 
+        (SQLTransfer.credit_account_id == account_id)
+      )
     
     if query.get('transaction_id'):
-      transaction_id_bytes = ensure_ulid_bytes(str(query['transaction_id']))
-      if transaction_id_bytes:
-        q = q.filter(SQLTransfer.transaction_id == transaction_id_bytes)
+      transaction_id = str(query['transaction_id'])
+      q = q.filter(SQLTransfer.transaction_id == transaction_id)
     
     if query.get('timestamp_min'):
-      q = q.filter(SQLTransfer.timestamp >= query['timestamp_min'])
+      q = q.filter(SQLTransfer.ts_created >= query['timestamp_min'])
     
     if query.get('timestamp_max'):
-      q = q.filter(SQLTransfer.timestamp <= query['timestamp_max'])
+      q = q.filter(SQLTransfer.ts_created <= query['timestamp_max'])
     
     if query.get('limit'):
       q = q.limit(query['limit'])
@@ -372,9 +356,8 @@ class SQLLedgerAPI(LedgerAPI):
     q = session.query(SQLTransaction)
     
     if query.get('transaction_id'):
-      transaction_id_bytes = ensure_ulid_bytes(str(query['transaction_id']))
-      if transaction_id_bytes:
-        q = q.filter(SQLTransaction.id == transaction_id_bytes)
+      transaction_id = str(query['transaction_id'])
+      q = q.filter(SQLTransaction.id == transaction_id)
     
     if query.get('transaction_type'):
       q = q.filter(SQLTransaction.transaction_type == query['transaction_type'].value)
@@ -384,11 +367,11 @@ class SQLLedgerAPI(LedgerAPI):
     
     if query.get('timestamp_min'):
       min_dt = datetime.fromtimestamp(query['timestamp_min'])
-      q = q.filter(SQLTransaction.timestamp >= min_dt)
+      q = q.filter(SQLTransaction.ts_created >= min_dt)
     
     if query.get('timestamp_max'):
       max_dt = datetime.fromtimestamp(query['timestamp_max'])
-      q = q.filter(SQLTransaction.timestamp <= max_dt)
+      q = q.filter(SQLTransaction.ts_created <= max_dt)
     
     if query.get('limit'):
       q = q.limit(query['limit'])
@@ -407,25 +390,22 @@ class SQLLedgerAPI(LedgerAPI):
     q = session.query(SQLJournalEntry)
     
     if query.get('entry_id'):
-      entry_id_bytes = ensure_ulid_bytes(str(query['entry_id']))
-      if entry_id_bytes:
-        q = q.filter(SQLJournalEntry.id == entry_id_bytes)
+      entry_id = str(query['entry_id'])
+      q = q.filter(SQLJournalEntry.id == entry_id)
     
     if query.get('account_id'):
-      account_id_bytes = ensure_ulid_bytes(str(query['account_id']))
-      if account_id_bytes:
-        q = q.filter(SQLJournalEntry.account_id == account_id_bytes)
+      account_id = str(query['account_id'])
+      q = q.filter(SQLJournalEntry.account_id == account_id)
     
     if query.get('transaction_id'):
-      transaction_id_bytes = ensure_ulid_bytes(str(query['transaction_id']))
-      if transaction_id_bytes:
-        q = q.filter(SQLJournalEntry.transaction_id == transaction_id_bytes)
+      transaction_id = str(query['transaction_id'])
+      q = q.filter(SQLJournalEntry.transaction_id == transaction_id)
     
     if query.get('timestamp_min'):
-      q = q.filter(SQLJournalEntry.timestamp >= query['timestamp_min'])
+      q = q.filter(SQLJournalEntry.ts_created >= query['timestamp_min'])
     
     if query.get('timestamp_max'):
-      q = q.filter(SQLJournalEntry.timestamp <= query['timestamp_max'])
+      q = q.filter(SQLJournalEntry.ts_created <= query['timestamp_max'])
     
     if query.get('limit'):
       q = q.limit(query['limit'])
@@ -439,7 +419,7 @@ class SQLLedgerAPI(LedgerAPI):
   def _convert_sql_account_to_ledger_account(self, sql_account: SQLAccount) -> LedgerAccount:
     """Convert SQLAccount model to LedgerAccount pydantic model."""
     return LedgerAccount(
-      id=bytes_to_ulid(sql_account.id),
+      id=sql_account.id,
       name=sql_account.name,
       account_type=AccountType(sql_account.account_type),
       side=LedgerSide(sql_account.side),
@@ -454,12 +434,12 @@ class SQLLedgerAPI(LedgerAPI):
   def _convert_sql_transfer_to_ledger_transfer(self, sql_transfer: SQLTransfer, with_balance: bool = True) -> LedgerTransfer:
     """Convert SQLTransfer model to LedgerTransfer pydantic model, optionally attaching the associated balance record."""
     transfer_obj = LedgerTransfer(
-      id=bytes_to_ulid(sql_transfer.id),
-      debit_account_id=bytes_to_ulid(sql_transfer.debit_account_id),
-      credit_account_id=bytes_to_ulid(sql_transfer.credit_account_id),
+      id=sql_transfer.id,
+      debit_account_id=sql_transfer.debit_account_id,
+      credit_account_id=sql_transfer.credit_account_id,
       amount=sql_transfer.amount,
-      timestamp=sql_transfer.timestamp,
-      transaction_id=bytes_to_ulid(sql_transfer.transaction_id) if sql_transfer.transaction_id else None
+      ts_created=sql_transfer.ts_created,
+      transaction_id=sql_transfer.transaction_id if sql_transfer.transaction_id else None
     )
     if with_balance:
       session = self.get_session()
@@ -487,11 +467,11 @@ class SQLLedgerAPI(LedgerAPI):
             for transfer in sql_transaction.transfers]
     
     return LedgerTransaction(
-      id=bytes_to_ulid(sql_transaction.id),
+      id=sql_transaction.id,
       transaction_type=TransactionType(sql_transaction.transaction_type),
       entries=entries,
       transfers=transfers,
-      timestamp=sql_transaction.timestamp,
+      ts_created=sql_transaction.ts_created,
       user_id=sql_transaction.user_id,
       reference=sql_transaction.reference,
       description=sql_transaction.description,
@@ -501,22 +481,22 @@ class SQLLedgerAPI(LedgerAPI):
   def _convert_sql_entry_to_ledger_entry(self, sql_entry: SQLJournalEntry) -> LedgerJournalEntry:
     """Convert SQLJournalEntry model to LedgerJournalEntry pydantic model."""
     return LedgerJournalEntry(
-      id=bytes_to_ulid(sql_entry.id),
-      account_id=bytes_to_ulid(sql_entry.account_id),
+      id=sql_entry.id,
+      account_id=sql_entry.account_id,
       debit=sql_entry.debit,
       credit=sql_entry.credit,
-      timestamp=sql_entry.timestamp,
-      transaction_id=bytes_to_ulid(sql_entry.transaction_id) if sql_entry.transaction_id else None,
+      ts_created=sql_entry.ts_created,
+      transaction_id=sql_entry.transaction_id if sql_entry.transaction_id else None,
       description=sql_entry.description
     )
   
   def _convert_sql_balance_to_ledger_balance(self, sql_balance: SQLAccountBalance) -> LedgerAccountBalance:
     """Convert SQLAccountBalance model to LedgerAccountBalance pydantic model."""
     return LedgerAccountBalance(
-      account_id=bytes_to_ulid(sql_balance.account_id),
+      account_id=sql_balance.account_id,
       balance=sql_balance.balance,
-      timestamp=int(sql_balance.ts.timestamp()) if sql_balance.ts else None,
-      last_transaction_id=bytes_to_ulid(sql_balance.this_tx) if sql_balance.this_tx else None
+      ts_created=int(sql_balance.ts_created.timestamp()) if sql_balance.ts_created else None,
+      last_transaction_id=sql_balance.this_tx if sql_balance.this_tx else None
     )
   
   def get_session(self) -> Session:
@@ -534,10 +514,8 @@ class SQLLedgerAPI(LedgerAPI):
   def get_account_balance(self, account_id: Union[int, str]) -> int:
     """Get current balance for an account."""
     session = self.get_session()
-    account_id_bytes = ensure_ulid_bytes(str(account_id))
-    if not account_id_bytes:
-      return 0
+    account_id = str(account_id)
     
-    account = session.query(SQLAccount).filter(SQLAccount.id == account_id_bytes).first()
+    account = session.query(SQLAccount).filter(SQLAccount.id == account_id).first()
     return account.balance if account else 0 
 
