@@ -39,8 +39,7 @@ class Token(CommonBase, Base):
     __tablename__ = 'router_token'
     
     id = Column(String(26), primary_key=True, default=generate_ulid)
-    salt = Column(String(16), nullable=False, unique=True)            # Base64 encoded salt (based on left 16 chars of api_key)
-    token_hash = Column(String(64), nullable=False, unique=True)      # SHA256 hex = 64 chars (based on left 16 salt + right 32 chars of api_key)
+    token = Column(String(64), nullable=False, unique=True)           # The actual token
     user_id = Column(String(26), nullable=False)                      # ULID for user reference
     is_active = Column(Boolean, nullable=False, default=True)         # Active flag
     last_access = Column(DateTime, nullable=True)                     # Last use of API token

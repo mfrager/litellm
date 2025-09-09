@@ -18,11 +18,6 @@ from .ledger_api import (
 
 __all__ = ["LedgerTransactionBuilder"]
 
-# Helper for generating unique IDs
-
-def new_ulid():
-  return str(ULID())
-
 # Helper for scaling decimals
 DECIMALS = 6
 SCALE = Decimal(10) ** DECIMALS
@@ -46,7 +41,7 @@ class LedgerTransactionBuilder:
       c_i, c_amt = credit_list[credit_idx]
       transfer_amt = min(d_amt, c_amt)
       transfers.append(LedgerTransfer(
-        id=new_ulid(),
+        id=str(ULID()),
         debit_account_id=entries[d_i].account_id,
         credit_account_id=entries[c_i].account_id,
         amount=transfer_amt,
@@ -70,7 +65,7 @@ class LedgerTransactionBuilder:
     amt = to_micro_units(amount)
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["ar_processor"],
         debit=amt,
         credit=0,
@@ -78,7 +73,7 @@ class LedgerTransactionBuilder:
         description="Pending receipt from processor"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["unearned_revenue"],
         debit=0,
         credit=amt,
@@ -88,7 +83,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.PAYMENT,
       entries=entries,
       transfers=transfers,
@@ -104,7 +99,7 @@ class LedgerTransactionBuilder:
     total_amt = to_micro_units(total)
     entries.append(
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["unearned_revenue"],
         debit=total_amt,
         credit=0,
@@ -117,7 +112,7 @@ class LedgerTransactionBuilder:
       amt = to_micro_units(amount)
       entries.append(
         LedgerJournalEntry(
-          id=new_ulid(),
+          id=str(ULID()),
           account_id=self.account_ids[code],
           debit=0,
           credit=amt,
@@ -127,7 +122,7 @@ class LedgerTransactionBuilder:
       )
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.PURCHASE,
       entries=entries,
       transfers=transfers,
@@ -141,7 +136,7 @@ class LedgerTransactionBuilder:
     amt = to_micro_units(amount)
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["cash_bank"],
         debit=amt,
         credit=0,
@@ -149,7 +144,7 @@ class LedgerTransactionBuilder:
         description="Funds from processor"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["ar_processor"],
         debit=0,
         credit=amt,
@@ -159,7 +154,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.SETTLEMENT,
       entries=entries,
       transfers=transfers,
@@ -174,7 +169,7 @@ class LedgerTransactionBuilder:
     code = f"{expense_type.lower()}_expense"
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids[code],
         debit=amt,
         credit=0,
@@ -182,7 +177,7 @@ class LedgerTransactionBuilder:
         description=f"Cost of {expense_type.lower()}"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["cash_bank"],
         debit=0,
         credit=amt,
@@ -192,7 +187,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.EXPENSE,
       entries=entries,
       transfers=transfers,
@@ -207,7 +202,7 @@ class LedgerTransactionBuilder:
     tax_amt = to_micro_units(tax_amount)
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["cash_bank"],
         debit=rev_amt + tax_amt,
         credit=0,
@@ -215,7 +210,7 @@ class LedgerTransactionBuilder:
         description="Funds from customer"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids[f"revenue_{product.lower()}"] ,
         debit=0,
         credit=rev_amt,
@@ -223,7 +218,7 @@ class LedgerTransactionBuilder:
         description="Product revenue"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["tax_payable"],
         debit=0,
         credit=tax_amt,
@@ -233,7 +228,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.TAX,
       entries=entries,
       transfers=transfers,
@@ -247,7 +242,7 @@ class LedgerTransactionBuilder:
     amt = to_micro_units(amount)
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["tax_payable"],
         debit=amt,
         credit=0,
@@ -255,7 +250,7 @@ class LedgerTransactionBuilder:
         description="Reduce tax liability"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["cash_bank"],
         debit=0,
         credit=amt,
@@ -265,7 +260,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.TAX_REMIT,
       entries=entries,
       transfers=transfers,
@@ -279,7 +274,7 @@ class LedgerTransactionBuilder:
     amt = to_micro_units(amount)
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["promo_expense"],
         debit=amt,
         credit=0,
@@ -287,7 +282,7 @@ class LedgerTransactionBuilder:
         description="Promo credit cost"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["promo_liability"],
         debit=0,
         credit=amt,
@@ -297,7 +292,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.PROMO,
       entries=entries,
       transfers=transfers,
@@ -312,7 +307,7 @@ class LedgerTransactionBuilder:
     code = f"promo_revenue_{product.lower()}"
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["promo_liability"],
         debit=amt,
         credit=0,
@@ -320,7 +315,7 @@ class LedgerTransactionBuilder:
         description="Reduce promo liability"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids[code],
         debit=0,
         credit=amt,
@@ -330,7 +325,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.USE_PROMO,
       entries=entries,
       transfers=transfers,
@@ -344,7 +339,7 @@ class LedgerTransactionBuilder:
     amt = to_micro_units(amount)
     entries = [
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["promo_liability"],
         debit=amt,
         credit=0,
@@ -352,7 +347,7 @@ class LedgerTransactionBuilder:
         description="Remove promo obligation"
       ),
       LedgerJournalEntry(
-        id=new_ulid(),
+        id=str(ULID()),
         account_id=self.account_ids["promo_expense"],
         debit=0,
         credit=amt,
@@ -362,7 +357,7 @@ class LedgerTransactionBuilder:
     ]
     transfers = self._generate_transfers(entries)
     return LedgerTransaction(
-      id=new_ulid(),
+      id=str(ULID()),
       transaction_type=TransactionType.CANCEL_PROMO,
       entries=entries,
       transfers=transfers,
