@@ -9,7 +9,6 @@ with MySQL database.
 import os
 import sys
 import pytest
-import pytest_asyncio
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 
@@ -37,8 +36,8 @@ class TestSimpleTransaction:
         """Fixture providing database URL for testing."""
         return os.environ['DATABASE_ASYNC_TEST']
     
-    @pytest_asyncio.fixture
-    async def sql_ledger_api(self, database_url):
+    @pytest.fixture
+    def sql_ledger_api(self, database_url):
         """Fixture providing SQLLedgerAPI instance."""
         ledger = Ledger(
             id=1,
@@ -47,10 +46,9 @@ class TestSimpleTransaction:
             has_transactions=True,
             config={"test": True}
         )
-        api = SQLLedgerAPI(ledger, database_url)
-        yield api
+        return SQLLedgerAPI(ledger, database_url)
     
-    @pytest_asyncio.fixture
+    @pytest.fixture
     def tx_builder(self):
         """Fixture providing transaction builder with test account IDs."""
         account_ids = {
@@ -66,8 +64,8 @@ class TestSimpleTransaction:
         }
         return LedgerTransactionBuilder(account_ids)
     
-    @pytest_asyncio.fixture
-    async def test_accounts(self):
+    @pytest.fixture
+    def test_accounts(self):
         """Create test accounts for the transaction builder."""
         return [
             LedgerAccount(
@@ -185,60 +183,77 @@ class TestSimpleTransaction:
         """Test a single payment transaction built with the transaction builder."""
         print(f"🗄️  Testing single payment transaction with MySQL database")
         
-        # Create accounts
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=test_accounts)])
-        await sql_ledger_api.end_transaction()
-        
-        # Build a payment transaction
-        payment_tx = await tx_builder.payment(
-            amount=100.00,
-            user_id=123,
-            name="Test Payment",
-            description="Test payment transaction"
-        )
-        
-        # Verify transaction structure
-        assert payment_tx.transaction_type.value == "PAYMENT"
-        assert payment_tx.user_id == 123
-        assert payment_tx.reference == "Test Payment"
-        assert payment_tx.description == "Test payment transaction"
-        assert len(payment_tx.entries) == 2
-        assert len(payment_tx.transfers) == 1
-        
-        # Verify journal entries
-        ar_entry = payment_tx.entries[0]
-        revenue_entry = payment_tx.entries[1]
-        
-        assert ar_entry.account_id == "ar_processor"
-        assert ar_entry.debit == 100000000  # $100.00 in micro units
-        assert ar_entry.credit == 0
-        
-        assert revenue_entry.account_id == "unearned_revenue"
-        assert revenue_entry.debit == 0
-        assert revenue_entry.credit == 100000000  # $100.00 in micro units
-        
-        # Verify transfer
-        transfer = payment_tx.transfers[0]
-        assert transfer.debit_account_id == "ar_processor"
-        assert transfer.credit_account_id == "unearned_revenue"
-        assert transfer.amount == 100000000  # $100.00 in micro units
-        
-        # Create the transaction in the database
-        logical_tx = LedgerLogicalTransaction(transactions=[payment_tx])
-        await sql_ledger_api.create_transactions([logical_tx])
-        
-        # Verify accounts were created and balances updated
-        await sql_ledger_api.begin_transaction()
-        ar_balance = await sql_ledger_api.get_account_balance("ar_processor")
-        revenue_balance = await sql_ledger_api.get_account_balance("unearned_revenue")
-        await sql_ledger_api.end_transaction()
-        
-        # Check balances (should be updated by triggers)
-        assert ar_balance == 100000000  # $100.00 debit balance
-        assert revenue_balance == -100000000  # $100.00 credit balance (negative for liability)
-        
-        print("✅ Payment transaction created and balances updated successfully")
+        try:
+            # Create accounts
+            await sql_ledger_api.begin_transaction()
+            await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=test_accounts)])
+            await sql_ledger_api.end_transaction()
+            
+            # Build a payment transaction
+            payment_tx = await tx_builder.payment(
+                amount=100.00,
+                user_id=123,
+                name="Test Payment",
+                description="Test payment transaction"
+            )
+            
+            # Verify transaction structure
+            assert payment_tx.transaction_type.value == "PAYMENT"
+            assert payment_tx.user_id == 123
+            assert payment_tx.reference == "Test Payment"
+            assert payment_tx.description == "Test payment transaction"
+            assert len(payment_tx.entries) == 2
+            assert len(payment_tx.transfers) == 1
+            
+            # Verify journal entries
+            ar_entry = payment_tx.entries[0]
+            revenue_entry = payment_tx.entries[1]
+            
+            assert ar_entry.account_id == "ar_processor"
+            assert ar_entry.debit == 100000000  # $100.00 in micro units
+            assert ar_entry.credit == 0
+            
+            assert revenue_entry.account_id == "unearned_revenue"
+            assert revenue_entry.debit == 0
+            assert revenue_entry.credit == 100000000  # $100.00 in micro units
+            
+            # Verify transfer
+            transfer = payment_tx.transfers[0]
+            assert transfer.debit_account_id == "ar_processor"
+            assert transfer.credit_account_id == "unearned_revenue"
+            assert transfer.amount == 100000000  # $100.00 in micro units
+            
+            # Get initial balances before the transaction
+            await sql_ledger_api.begin_transaction()
+            initial_ar_balance = await sql_ledger_api.get_account_balance("ar_processor")
+            initial_revenue_balance = await sql_ledger_api.get_account_balance("unearned_revenue")
+            await sql_ledger_api.end_transaction()
+            
+            # Create the transaction in the database
+            logical_tx = LedgerLogicalTransaction(transactions=[payment_tx])
+            await sql_ledger_api.begin_transaction()
+            await sql_ledger_api.create_transactions([logical_tx])
+            await sql_ledger_api.end_transaction()
+            
+            # Verify accounts were created and balances updated
+            await sql_ledger_api.begin_transaction()
+            final_ar_balance = await sql_ledger_api.get_account_balance("ar_processor")
+            final_revenue_balance = await sql_ledger_api.get_account_balance("unearned_revenue")
+            await sql_ledger_api.end_transaction()
+            
+            # Calculate expected balances (initial + transaction amount)
+            expected_ar_balance = initial_ar_balance + 100000000  # Add $100.00 debit
+            expected_revenue_balance = initial_revenue_balance - 100000000  # Subtract $100.00 credit (liability)
+            
+            # Check balances (should be updated by triggers)
+            assert final_ar_balance == expected_ar_balance, f"AR balance: expected {expected_ar_balance}, got {final_ar_balance}"
+            assert final_revenue_balance == expected_revenue_balance, f"Revenue balance: expected {expected_revenue_balance}, got {final_revenue_balance}"
+            
+            print("✅ Payment transaction created and balances updated successfully")
+            
+        finally:
+            # Clean up database connections
+            await sql_ledger_api.close()
 
 
 if __name__ == "__main__":

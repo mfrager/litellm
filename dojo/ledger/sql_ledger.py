@@ -188,7 +188,6 @@ class SQLLedgerAPI(LedgerAPI):
 
   async def create_transactions(self, tx_list: List[LedgerLogicalTransaction]) -> None:
     """Create new transactions."""
-    self.begin_transaction()
     session = self.get_session()
     for logical_tx in tx_list:
       for tx in logical_tx.transactions:
@@ -207,11 +206,10 @@ class SQLLedgerAPI(LedgerAPI):
         if self.ledger.has_journal:
           for entry in tx.entries:
             entry.transaction_id = sql_tx_id
-          await self.create_journal_entries(LedgerJournalTransaction(entries=tx.entries))
+          await self.create_journal_entries([LedgerJournalTransaction(entries=tx.entries)])
         for transfer in tx.transfers:
           transfer.transaction_id = sql_tx_id
-        await self.create_transfers(LedgerTransferTransaction(transfers=tx.transfers))
-    self.end_transaction()
+        await self.create_transfers([LedgerTransferTransaction(transfers=tx.transfers)])
 
   async def lookup_accounts(self, account_ids: List[Union[int, str]]) -> List[LedgerAccount]:
     """Fetch accounts by ID."""
