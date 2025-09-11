@@ -6,12 +6,12 @@ This builder outputs transactions in the format required by ledger_api.py, suppo
 
 from ulid import ULID
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Union, Optional
 
 from .ledger_api import (
   LedgerJournalEntry,
-  LedgerTransfer,
+  LedgerAccountTransfer,
   LedgerTransaction,
   TransactionType,
 )
@@ -29,7 +29,7 @@ class LedgerTransactionBuilder:
   def __init__(self, account_ids: Dict[str, str]):
     self.account_ids = account_ids
 
-  def _generate_transfers(self, entries: List[LedgerJournalEntry]) -> List[LedgerTransfer]:
+  def _generate_transfers(self, entries: List[LedgerJournalEntry]) -> List[LedgerAccountTransfer]:
     """Generate transfers from journal entries (debits to credits, splitting as needed) without modifying the original entries."""
     transfers = []
     # Build lists of (index, amount) for debits and credits
@@ -40,11 +40,12 @@ class LedgerTransactionBuilder:
       d_i, d_amt = debit_list[debit_idx]
       c_i, c_amt = credit_list[credit_idx]
       transfer_amt = min(d_amt, c_amt)
-      transfers.append(LedgerTransfer(
+      transfers.append(LedgerAccountTransfer(
         id=str(ULID()),
         debit_account_id=entries[d_i].account_id,
         credit_account_id=entries[c_i].account_id,
         amount=transfer_amt,
+        ts_created=datetime.now(timezone.utc),
         transaction_id=None,
         balance=None
       ))

@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Union, TypedDict
 from pydantic import BaseModel, Field
+from datetime import datetime
 from enum import Enum
 
 class LedgerSide(Enum):
@@ -42,33 +43,33 @@ class LedgerAccount(BaseModel):
 class LedgerAccountBalance(BaseModel):
     account_id: Union[int, str] = Field(..., description="Account ID")
     balance: int = Field(..., description="Balance")
-    ts_created: Optional[int] = Field(..., description="Balance timestamp")
+    ts_created: Optional[datetime] = Field(..., description="Balance timestamp")
     last_transaction_id: Optional[Union[int, str]] = Field(..., description="Last transaction ID")
+
+class LedgerAccountTransfer(BaseModel):
+    id: Union[int, str] = Field(..., description="Transfer ID")
+    debit_account_id: Union[int, str] = Field(..., description="Debit account ID")
+    credit_account_id: Union[int, str] = Field(..., description="Credit account ID")
+    amount: int = Field(..., description="Transfer amount")
+    ts_created: Optional[datetime] = Field(None, description="Transfer timestamp")
+    transaction_id: Optional[Union[int, str]] = Field(..., description="Transaction ID")
+    balance: Optional[LedgerAccountBalance] = Field(None, description="Associated account balance after this transfer")
 
 class LedgerJournalEntry(BaseModel):
     id: Union[int, str] = Field(..., description="Journal entry ID")
     account_id: Union[int, str] = Field(..., description="Account ID")
     debit: Optional[int] = Field(..., description="Debit amount")
     credit: Optional[int] = Field(..., description="Credit amount")
-    ts_created: Optional[int] = Field(None, description="Journal entry timestamp")
+    ts_created: Optional[datetime] = Field(None, description="Journal entry timestamp")
     transaction_id: Optional[Union[int, str]] = Field(..., description="Transaction ID")
     description: Optional[str] = Field(..., description="Journal entry description")
-
-class LedgerTransfer(BaseModel):
-    id: Union[int, str] = Field(..., description="Transfer ID")
-    debit_account_id: Union[int, str] = Field(..., description="Debit account ID")
-    credit_account_id: Union[int, str] = Field(..., description="Credit account ID")
-    amount: int = Field(..., description="Transfer amount")
-    ts_created: Optional[int] = Field(None, description="Transfer timestamp")
-    transaction_id: Optional[Union[int, str]] = Field(..., description="Transaction ID")
-    balance: Optional[LedgerAccountBalance] = Field(None, description="Associated account balance after this transfer")
 
 class LedgerTransaction(BaseModel):
     id: Union[int, str] = Field(..., description="Transaction ID")
     transaction_type: TransactionType = Field(..., description="Transaction type")
     entries: Optional[List[LedgerJournalEntry]] = Field(..., description="Journal entries")
-    transfers: List[LedgerTransfer] = Field(..., description="Transfers")
-    ts_created: Optional[int] = Field(None, description="Transaction timestamp")
+    transfers: List[LedgerAccountTransfer] = Field(..., description="Transfers")
+    ts_created: Optional[datetime] = Field(None, description="Transaction timestamp")
     user_id: Optional[int] = Field(..., description="User ID")
     reference: Optional[str] = Field(..., description="Transaction reference")
     description: Optional[str] = Field(..., description="Transaction description")
@@ -78,7 +79,7 @@ class LedgerAccountTransaction(BaseModel):
     accounts: List[LedgerAccount] = Field(..., description="Accounts")
     
 class LedgerTransferTransaction(BaseModel):
-    transfers: List[LedgerTransfer] = Field(..., description="Transfers")
+    transfers: List[LedgerAccountTransfer] = Field(..., description="Transfers")
 
 class LedgerLogicalTransaction(BaseModel):
     transactions: List[LedgerTransaction] = Field(..., description="Transactions")
@@ -96,8 +97,8 @@ class Ledger(BaseModel):
 class LedgerAccountFilter(TypedDict, total=False):
     account_id: Optional[Union[int, str]]
     transaction_id: Optional[Union[int, str]]
-    timestamp_min: Optional[int]
-    timestamp_max: Optional[int]
+    timestamp_min: Optional[datetime]
+    timestamp_max: Optional[datetime]
     limit: Optional[int]
     offset: Optional[int]
     data_param: Optional[dict]
@@ -108,8 +109,8 @@ class LedgerQuery(TypedDict, total=False):
     transaction_id: Optional[Union[int, str]]
     entry_id: Optional[Union[int, str]]
     transaction_type: Optional[TransactionType]
-    timestamp_min: Optional[int]
-    timestamp_max: Optional[int]
+    timestamp_min: Optional[datetime]
+    timestamp_max: Optional[datetime]
     limit: Optional[int]
     offset: Optional[int]
     data_param: Optional[dict]
@@ -130,13 +131,8 @@ class LedgerAPI(ABC):
     def create_accounts(self, account_list: List[LedgerAccountTransaction]) -> None:
         pass
 
-    def create_transactions(self, tx_list: List[LedgerAccountTransaction]) -> None:
-        self.begin_transaction()
-        for tx in tx_list:
-            if self.ledger.has_journal:
-                self.create_journal_entries(tx.entries)
-            self.create_transfers(tx.transfers)
-        self.end_transaction()
+    def create_transactions(self, tx_list: List[LedgerLogicalTransaction]) -> None:
+        pass
 
     @abstractmethod
     def create_journal_entries(self, entry_list: List[LedgerJournalTransaction]) -> None:
@@ -155,7 +151,7 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    def lookup_transfers(self, transfer_ids: List[Union[int, str]]) -> List[LedgerTransfer]:
+    def lookup_transfers(self, transfer_ids: List[Union[int, str]]) -> List[LedgerAccountTransfer]:
         """
         Fetch transfers by ID:
         - transfer_ids: List[Union[int, str]]
@@ -179,7 +175,7 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    def get_account_transfers(self, filter: LedgerAccountFilter) -> List[LedgerTransfer]:
+    def get_account_transfers(self, filter: LedgerAccountFilter) -> List[LedgerAccountTransfer]:
         """
         Fetch transfers involving a specific account using an account filter.
         """
@@ -200,7 +196,7 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    def query_transfers(self, query: LedgerQuery) -> List[LedgerTransfer]:
+    def query_transfers(self, query: LedgerQuery) -> List[LedgerAccountTransfer]:
         """
         Query transfers by various fields.
         """

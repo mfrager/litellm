@@ -23,8 +23,8 @@ CREATE TRIGGER tx_balance_update
 AFTER UPDATE ON ledger_accounts
 FOR EACH ROW
 BEGIN
-  INSERT INTO ledger_account_log (account_id, last_tx, last_balance, this_tx, balance, ts_created)
-  VALUES (OLD.id, OLD.last_tx, OLD.balance, NEW.last_tx, NEW.balance, UTC_TIMESTAMP());
+  INSERT INTO ledger_account_log (account_id, last_tx, last_balance, this_tx, balance)
+  VALUES (OLD.id, OLD.last_tx, OLD.balance, NEW.last_tx, NEW.balance);
 END
 
 ----------------------------------------------

@@ -1,4 +1,3 @@
-from flask_login import UserMixin
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Date, Enum, Index, DECIMAL, JSON, Table
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -17,7 +16,7 @@ class Workspace(CommonBase, Base):
     # Relationships
     owner = relationship("User", back_populates="owned_workspaces", foreign_keys=[owner_id], primaryjoin="Workspace.owner_id == User.id")
 
-class User(UserMixin, CommonBase, Base):
+class User(CommonBase, Base):
     __tablename__ = 'router_user'
     
     id = Column(String(26), primary_key=True, default=generate_ulid)

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine, text, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union, Dict, Any
 
 from models.ledger_model import (
@@ -19,9 +20,9 @@ from models.ledger_model import (
   SQLAccountBalance,
   SQLAccountTransaction,
   SQLJournalEntry,
-  SQLTransfer,
   SQLTransaction,
   SQLLedger,
+  Base,
 )
 
 from .ledger_api import (
@@ -30,7 +31,7 @@ from .ledger_api import (
   LedgerAccount, 
   LedgerAccountBalance, 
   LedgerJournalEntry, 
-  LedgerTransfer, 
+  LedgerAccountTransfer,
   LedgerTransaction,
   LedgerAccountTransaction,
   LedgerTransferTransaction,
@@ -117,9 +118,20 @@ class SQLLedgerAPI(LedgerAPI):
           history=account.history,
           balance=0
         )
-        session.add(sql_account)
-    
-    await session.flush()
+        
+        try:
+          session.add(sql_account)
+          await session.flush()
+        except IntegrityError as e:
+          # Handle duplicate key error - account already exists
+          if "Duplicate entry" in str(e) and "PRIMARY" in str(e):
+            # Account already exists, continue without error
+            await session.rollback()
+            print(f"Account {account_id} already exists, skipping creation")
+            continue
+          else:
+            # Re-raise other integrity errors
+            raise e
   
   async def create_journal_entries(self, entry_list: List[LedgerJournalTransaction]) -> None:
     """Create new journal entries."""
@@ -158,18 +170,7 @@ class SQLLedgerAPI(LedgerAPI):
         debit_account_id = transfer.debit_account_id
         credit_account_id = transfer.credit_account_id
         transaction_id = str(transfer.transaction_id) if transfer.transaction_id else None
-        
-        # Create the transfer record
-        sql_transfer = SQLTransfer(
-          id=transfer_id,
-          debit_account_id=debit_account_id,
-          credit_account_id=credit_account_id,
-          amount=transfer.amount,
-          ts_created=transfer.ts_created,
-          transaction_id=transaction_id
-        )
-        session.add(sql_transfer)
-        
+
         # Create the account transaction (triggers will update balances)
         account_tx_id = str(ULID())
         account_tx = SQLAccountTransaction(
@@ -177,17 +178,41 @@ class SQLLedgerAPI(LedgerAPI):
           src_id=credit_account_id,  # Source is credit account
           dst_id=debit_account_id,   # Destination is debit account
           amount=transfer.amount,
-          ts_created=datetime.now(timezone.utc),
+          ts_created=transfer.ts_created or datetime.now(timezone.utc),
           transaction_id=transaction_id,
           description=f"Transfer {transfer_id}"
         )
         session.add(account_tx)
-        
-        # Manually update account balances (since SQLite doesn't have triggers)
-        await self._update_account_balances(session, debit_account_id, credit_account_id, transfer.amount, account_tx_id)
     
     await session.flush()
-  
+
+  async def create_transactions(self, tx_list: List[LedgerLogicalTransaction]) -> None:
+    """Create new transactions."""
+    self.begin_transaction()
+    session = self.get_session()
+    for logical_tx in tx_list:
+      for tx in logical_tx.transactions:
+        sql_tx_id = str(ULID())
+        sql_tx = SQLTransaction(
+          id=sql_tx_id,
+          transaction_type=tx.transaction_type.value,
+          user_id=tx.user_id,
+          reference=tx.reference,
+          description=tx.description,
+          details=json.dumps(tx.details) if tx.details else None,
+          ts_created=tx.ts_created or datetime.now(timezone.utc)  
+        )
+        session.add(sql_tx)
+        await session.flush()
+        if self.ledger.has_journal:
+          for entry in tx.entries:
+            entry.transaction_id = sql_tx_id
+          await self.create_journal_entries(LedgerJournalTransaction(entries=tx.entries))
+        for transfer in tx.transfers:
+          transfer.transaction_id = sql_tx_id
+        await self.create_transfers(LedgerTransferTransaction(transfers=tx.transfers))
+    self.end_transaction()
+
   async def lookup_accounts(self, account_ids: List[Union[int, str]]) -> List[LedgerAccount]:
     """Fetch accounts by ID."""
     session = self.get_session()
@@ -200,19 +225,19 @@ class SQLLedgerAPI(LedgerAPI):
     
     return [self._convert_sql_account_to_ledger_account(acc) for acc in sql_accounts]
   
-  async def lookup_transfers(self, transfer_ids: List[Union[int, str]], with_balance: bool = True) -> List[LedgerTransfer]:
+  async def lookup_transfers(self, transfer_ids: List[Union[int, str]], with_balance: bool = True) -> List[LedgerAccountTransfer]:
     """Fetch transfers by ID."""
     session = self.get_session()
     
     # Convert all IDs to string format
     ids = [str(tid) for tid in transfer_ids]
     
-    result = await session.execute(select(SQLTransfer).filter(SQLTransfer.id.in_(ids)))
+    result = await session.execute(select(SQLAccountTransaction).filter(SQLAccountTransaction.id.in_(ids)))
     sql_transfers = result.scalars().all()
     
     transfers = []
     for transfer in sql_transfers:
-      converted_transfer = await self._convert_sql_transfer_to_ledger_transfer(transfer, with_balance=with_balance)
+      converted_transfer = self._convert_sql_account_transaction_to_ledger_transfer(transfer, with_balance=with_balance)
       transfers.append(converted_transfer)
     return transfers
   
@@ -242,24 +267,24 @@ class SQLLedgerAPI(LedgerAPI):
     
     return [self._convert_sql_entry_to_ledger_entry(entry) for entry in sql_entries]
   
-  async def get_account_transfers(self, filter: LedgerAccountFilter, with_balance: bool = True) -> List[LedgerTransfer]:
+  async def get_account_transfers(self, filter: LedgerAccountFilter, with_balance: bool = True) -> List[LedgerAccountTransfer]:
     """Fetch transfers involving a specific account."""
     session = self.get_session()
     
-    query = select(SQLTransfer)
+    query = select(SQLAccountTransaction)
     
     if filter.get('account_id'):
       account_id = str(filter['account_id'])
       query = query.filter(
-        (SQLTransfer.debit_account_id == account_id) | 
-        (SQLTransfer.credit_account_id == account_id)
+        (SQLAccountTransaction.src_id == account_id) | 
+        (SQLAccountTransaction.dst_id == account_id)
       )
     
     if filter.get('timestamp_min'):
-      query = query.filter(SQLTransfer.ts_created >= filter['timestamp_min'])
+      query = query.filter(SQLAccountTransaction.ts_created >= filter['timestamp_min'])
     
     if filter.get('timestamp_max'):
-      query = query.filter(SQLTransfer.ts_created <= filter['timestamp_max'])
+      query = query.filter(SQLAccountTransaction.ts_created <= filter['timestamp_max'])
     
     if filter.get('limit'):
       query = query.limit(filter['limit'])
@@ -272,7 +297,7 @@ class SQLLedgerAPI(LedgerAPI):
     
     transfers = []
     for transfer in sql_transfers:
-      converted_transfer = await self._convert_sql_transfer_to_ledger_transfer(transfer, with_balance=with_balance)
+      converted_transfer = self._convert_sql_account_transaction_to_ledger_transfer(transfer, with_balance=with_balance)
       transfers.append(converted_transfer)
     return transfers
   
@@ -287,13 +312,10 @@ class SQLLedgerAPI(LedgerAPI):
       query = query.filter(SQLAccountBalance.account_id == account_id)
     
     if filter.get('timestamp_min'):
-      # Convert timestamp to datetime for comparison
-      min_dt = datetime.fromtimestamp(filter['timestamp_min'])
-      query = query.filter(SQLAccountBalance.ts_created >= min_dt)
+      query = query.filter(SQLAccountBalance.ts_created >= filter['timestamp_min'])
     
     if filter.get('timestamp_max'):
-      max_dt = datetime.fromtimestamp(filter['timestamp_max'])
-      query = query.filter(SQLAccountBalance.ts_created <= max_dt)
+      query = query.filter(SQLAccountBalance.ts_created <= filter['timestamp_max'])
     
     # Order by timestamp (most recent first) BEFORE applying limit/offset
     query = query.order_by(SQLAccountBalance.ts_created.desc())
@@ -332,32 +354,32 @@ class SQLLedgerAPI(LedgerAPI):
     sql_accounts = result.scalars().all()
     return [self._convert_sql_account_to_ledger_account(acc) for acc in sql_accounts]
   
-  async def query_transfers(self, query: LedgerQuery, with_balance: bool = True) -> List[LedgerTransfer]:
+  async def query_transfers(self, query: LedgerQuery, with_balance: bool = True) -> List[LedgerAccountTransfer]:
     """Query transfers by various fields."""
     session = self.get_session()
     
-    q = select(SQLTransfer)
+    q = select(SQLAccountTransaction)
     
     if query.get('transfer_id'):
       transfer_id = str(query['transfer_id'])
-      q = q.filter(SQLTransfer.id == transfer_id)
+      q = q.filter(SQLAccountTransaction.id == transfer_id)
     
     if query.get('account_id'):
       account_id = str(query['account_id'])
       q = q.filter(
-        (SQLTransfer.debit_account_id == account_id) | 
-        (SQLTransfer.credit_account_id == account_id)
+        (SQLAccountTransaction.src_id == account_id) | 
+        (SQLAccountTransaction.dst_id == account_id)
       )
     
     if query.get('transaction_id'):
       transaction_id = str(query['transaction_id'])
-      q = q.filter(SQLTransfer.transaction_id == transaction_id)
+      q = q.filter(SQLAccountTransaction.transaction_id == transaction_id)
     
     if query.get('timestamp_min'):
-      q = q.filter(SQLTransfer.ts_created >= query['timestamp_min'])
+      q = q.filter(SQLAccountTransaction.ts_created >= query['timestamp_min'])
     
     if query.get('timestamp_max'):
-      q = q.filter(SQLTransfer.ts_created <= query['timestamp_max'])
+      q = q.filter(SQLAccountTransaction.ts_created <= query['timestamp_max'])
     
     if query.get('limit'):
       q = q.limit(query['limit'])
@@ -370,7 +392,7 @@ class SQLLedgerAPI(LedgerAPI):
     
     transfers = []
     for transfer in sql_transfers:
-      converted_transfer = await self._convert_sql_transfer_to_ledger_transfer(transfer, with_balance=with_balance)
+      converted_transfer = self._convert_sql_account_transaction_to_ledger_transfer(transfer, with_balance=with_balance)
       transfers.append(converted_transfer)
     return transfers
   
@@ -392,12 +414,10 @@ class SQLLedgerAPI(LedgerAPI):
       q = q.filter(SQLTransaction.user_id == query['user_id'])
     
     if query.get('timestamp_min'):
-      min_dt = datetime.fromtimestamp(query['timestamp_min'])
-      q = q.filter(SQLTransaction.ts_created >= min_dt)
+      q = q.filter(SQLTransaction.ts_created >= query['timestamp_min'])
     
     if query.get('timestamp_max'):
-      max_dt = datetime.fromtimestamp(query['timestamp_max'])
-      q = q.filter(SQLTransaction.ts_created <= max_dt)
+      q = q.filter(SQLTransaction.ts_created <= query['timestamp_max'])
     
     if query.get('limit'):
       q = q.limit(query['limit'])
@@ -463,28 +483,6 @@ class SQLLedgerAPI(LedgerAPI):
       history=sql_account.history
     )
   
-  async def _convert_sql_transfer_to_ledger_transfer(self, sql_transfer: SQLTransfer, with_balance: bool = True) -> LedgerTransfer:
-    """Convert SQLTransfer model to LedgerTransfer pydantic model, optionally attaching the associated balance record."""
-    transfer_obj = LedgerTransfer(
-      id=sql_transfer.id,
-      debit_account_id=sql_transfer.debit_account_id,
-      credit_account_id=sql_transfer.credit_account_id,
-      amount=sql_transfer.amount,
-      ts_created=int(sql_transfer.ts_created.timestamp()) if sql_transfer.ts_created else None,
-      transaction_id=sql_transfer.transaction_id if sql_transfer.transaction_id else None
-    )
-    if with_balance:
-      session = self.get_session()
-      # Find the balance record for the debit account after this transfer (this_tx == transfer.id)
-      result = await session.execute(select(SQLAccountBalance).filter(
-        SQLAccountBalance.account_id == sql_transfer.debit_account_id,
-        SQLAccountBalance.this_tx == sql_transfer.id
-      ))
-      balance_record = result.scalars().first()
-      if balance_record:
-        transfer_obj.balance = self._convert_sql_balance_to_ledger_balance(balance_record)
-    return transfer_obj
-  
   async def _convert_sql_transaction_to_ledger_transaction(self, sql_transaction: SQLTransaction, 
                            include_journal: bool = True, 
                            include_transfers: bool = True) -> LedgerTransaction:
@@ -497,7 +495,7 @@ class SQLLedgerAPI(LedgerAPI):
     transfers = []
     if include_transfers and sql_transaction.transfers:
       for transfer in sql_transaction.transfers:
-        converted_transfer = await self._convert_sql_transfer_to_ledger_transfer(transfer)
+        converted_transfer = self._convert_sql_account_transaction_to_ledger_transfer(transfer)
         transfers.append(converted_transfer)
     
     return LedgerTransaction(
@@ -529,7 +527,7 @@ class SQLLedgerAPI(LedgerAPI):
     return LedgerAccountBalance(
       account_id=sql_balance.account_id,
       balance=sql_balance.balance,
-      ts_created=int(sql_balance.ts_created.timestamp()) if sql_balance.ts_created else None,
+      ts_created=sql_balance.ts_created,
       last_transaction_id=sql_balance.this_tx if sql_balance.this_tx else None
     )
   
@@ -556,75 +554,85 @@ class SQLLedgerAPI(LedgerAPI):
   
   async def create_tables(self) -> None:
     """Create all database tables."""
-    from models.ledger_model import Base
     async with self.engine.begin() as conn:
       await conn.run_sync(Base.metadata.create_all)
   
   async def close(self) -> None:
     """Close the database engine and clean up resources."""
     await self.engine.dispose()
-  
-  async def _update_account_balances(self, session: AsyncSession, debit_account_id: str, credit_account_id: str, amount: int, transaction_id: str) -> None:
-    """Update account balances after a transfer (replaces database triggers for SQLite)."""
-    from datetime import datetime, timezone
-    
-    # Update debit account (increase balance)
-    await session.execute(
-        text("UPDATE ledger_accounts SET balance = balance + :amount, ts_updated = :ts, last_tx = :tx_id WHERE id = :account_id"),
-        {"amount": amount, "ts": datetime.now(timezone.utc), "tx_id": transaction_id, "account_id": debit_account_id}
+
+  def _convert_sql_account_transaction_to_ledger_transfer(self, sql_transaction: SQLAccountTransaction, with_balance: bool = True) -> LedgerAccountTransfer:
+    """Convert SQLAccountTransaction model to LedgerAccountTransfer pydantic model."""
+    transfer_obj = LedgerAccountTransfer(
+      id=sql_transaction.id,
+      debit_account_id=sql_transaction.dst_id,  # Destination is debit account
+      credit_account_id=sql_transaction.src_id,  # Source is credit account
+      amount=sql_transaction.amount,
+      ts_created=sql_transaction.ts_created,
+      transaction_id=sql_transaction.transaction_id if sql_transaction.transaction_id else None
     )
-    
-    # Update credit account (decrease balance)
-    await session.execute(
-        text("UPDATE ledger_accounts SET balance = balance - :amount, ts_updated = :ts, last_tx = :tx_id WHERE id = :account_id"),
-        {"amount": amount, "ts": datetime.now(timezone.utc), "tx_id": transaction_id, "account_id": credit_account_id}
-    )
-    
-    # Create balance history entries
-    await self._create_balance_history(session, debit_account_id, credit_account_id, amount, transaction_id)
-  
-  async def _create_balance_history(self, session: AsyncSession, debit_account_id: str, credit_account_id: str, amount: int, transaction_id: str) -> None:
-    """Create balance history entries for both accounts."""
-    from datetime import datetime, timezone
-    
-    # Get current balances
-    debit_result = await session.execute(text("SELECT balance FROM ledger_accounts WHERE id = :account_id"), {"account_id": debit_account_id})
-    debit_balance = debit_result.scalar() or 0
-    
-    credit_result = await session.execute(text("SELECT balance FROM ledger_accounts WHERE id = :account_id"), {"account_id": credit_account_id})
-    credit_balance = credit_result.scalar() or 0
-    
-    # Create balance history for debit account
-    await session.execute(
-        text("""
-            INSERT INTO ledger_account_log (id, account_id, last_tx, last_balance, this_tx, balance, ts_created)
-            VALUES (:id, :account_id, :last_tx, :last_balance, :this_tx, :balance, :ts)
-        """),
-        {
-            "id": str(ULID()),
-            "account_id": debit_account_id,
-            "last_tx": None,  # Could be improved to track previous transaction
-            "last_balance": debit_balance - amount,
-            "this_tx": transaction_id,
-            "balance": debit_balance,
-            "ts": datetime.now(timezone.utc)
-        }
-    )
-    
-    # Create balance history for credit account
-    await session.execute(
-        text("""
-            INSERT INTO ledger_account_log (id, account_id, last_tx, last_balance, this_tx, balance, ts_created)
-            VALUES (:id, :account_id, :last_tx, :last_balance, :this_tx, :balance, :ts)
-        """),
-        {
-            "id": str(ULID()),
-            "account_id": credit_account_id,
-            "last_tx": None,  # Could be improved to track previous transaction
-            "last_balance": credit_balance + amount,
-            "this_tx": transaction_id,
-            "balance": credit_balance,
-            "ts": datetime.now(timezone.utc)
-        }
-    ) 
+    if with_balance:
+      # For now, we'll set balance to None since we don't have the balance lookup logic
+      # This could be enhanced later to fetch the actual balance
+      transfer_obj.balance = None
+    return transfer_obj
+
+  async def _create_sqlite_triggers(self) -> None:
+    """Create SQLite triggers for balance updates."""
+    print("Creating SQLite triggers (async)...")
+
+    # Create triggers directly using raw SQL
+    async with self.engine.begin() as connection:
+      # Drop existing triggers first
+      try:
+        await connection.execute(text("DROP TRIGGER IF EXISTS tx_transaction_insert"))
+        await connection.execute(text("DROP TRIGGER IF EXISTS tx_balance_update"))
+      except Exception as e:
+        print(f"Note: Could not drop existing triggers: {e}")
+
+      # Create transaction trigger
+      tx_trigger_sql = """
+      CREATE TRIGGER tx_transaction_insert
+      AFTER INSERT ON ledger_account_transaction
+      FOR EACH ROW
+      BEGIN
+        UPDATE ledger_accounts
+        SET balance = balance - NEW.amount,
+          ts_updated = NEW.ts_created,
+          last_tx = NEW.id
+        WHERE id = NEW.src_id;
+
+        UPDATE ledger_accounts
+        SET balance = balance + NEW.amount,
+          ts_updated = NEW.ts_created,
+          last_tx = NEW.id
+        WHERE id = NEW.dst_id;
+      END
+      """
+
+      # Create balance logging trigger
+      balance_trigger_sql = """
+      CREATE TRIGGER tx_balance_update
+      AFTER UPDATE ON ledger_accounts
+      FOR EACH ROW
+      WHEN OLD.balance != NEW.balance
+      BEGIN
+        INSERT INTO ledger_account_log (account_id, last_tx, last_balance, this_tx, balance)
+        VALUES (OLD.id, OLD.last_tx, OLD.balance, NEW.last_tx, NEW.balance);
+      END
+      """
+
+      try:
+        await connection.execute(text(tx_trigger_sql))
+        print("✅ Created transaction trigger")
+      except Exception as e:
+        print(f"❌ Failed to create transaction trigger: {e}")
+
+      try:
+        await connection.execute(text(balance_trigger_sql))
+        print("✅ Created balance logging trigger")
+      except Exception as e:
+        print(f"❌ Failed to create balance logging trigger: {e}")
+
+    print("SQLite triggers creation completed.")
 
