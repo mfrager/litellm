@@ -342,6 +342,9 @@ class SQLLedgerAPI(LedgerAPI):
     if query.get('owner_id'):
       q = q.filter(SQLAccount.owner_id == query['owner_id'])
     
+    if query.get('name'):
+      q = q.filter(SQLAccount.name == query['name'])
+    
     if query.get('limit'):
       q = q.limit(query['limit'])
     

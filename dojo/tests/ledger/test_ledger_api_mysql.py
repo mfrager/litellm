@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-Unit Tests for Ledger API
+Comprehensive Ledger API Test Suite - MySQL Version
 
 This module contains comprehensive tests for the Ledger API implementations,
-including the SQL backend with various database types.
+following the golden master pattern with detailed tabular output and testing
+all transaction types from the transaction builder using MySQL.
 """
 
 import os
 import sys
 import uuid
 import pytest
-import pytest_asyncio
-import tempfile
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 from datetime import datetime, timezone
-from unittest.mock import patch, MagicMock
+from decimal import Decimal
+from tabulate import tabulate
+from ulid import ULID
 
 sys.path.append('../..')
 load_dotenv('../../../.env')
@@ -26,11 +27,12 @@ from ledger.ledger_api import (
     LedgerAccount,
     LedgerAccountBalance,
     LedgerJournalEntry,
-    LedgerTransfer,
+    LedgerAccountTransfer,
     LedgerTransaction,
     LedgerAccountTransaction,
     LedgerTransferTransaction,
     LedgerJournalTransaction,
+    LedgerLogicalTransaction,
     LedgerAccountFilter,
     LedgerQuery,
     AccountType,
@@ -38,739 +40,1265 @@ from ledger.ledger_api import (
     TransactionType
 )
 
-from ledger.sql_ledger import (
-    SQLLedgerAPI,
-    SQLAccount,
-    SQLAccountBalance,
-    SQLTransfer,
-    SQLTransaction,
-    SQLJournalEntry
-)
+from ledger.sql_ledger import SQLLedgerAPI
+from ledger.ledger_tx_builder import LedgerTransactionBuilder
+
+# Decimal precision for monetary calculations
+DECIMALS = 6
+SCALE = Decimal(10) ** DECIMALS
+
+def fmt_decimal(val):
+    """Format decimal values for display."""
+    return f"${Decimal(val).quantize(Decimal('0.000001')):,.6f}"
+
+def generate_session_account_mapping():
+    """Generate fresh ULID mapping for each test session."""
+    return {
+        "cash": str(ULID()),
+        "ar_processor": str(ULID()),
+        "unearned_revenue": str(ULID()),
+        "tax_payable": str(ULID()),
+        "promo_liability": str(ULID()),
+        "revenue_product_a": str(ULID()),
+        "promo_revenue_product_a": str(ULID()),
+        "service_fees_expense": str(ULID()),
+        "promo_expense": str(ULID()),
+    }
 
 
-class TestLedgerAPI:
-    """Base test class for LedgerAPI implementations."""
+class TestComprehensiveLedgerAPI:
+    """Comprehensive test suite for Ledger API with all transaction types."""
     
-    def create_test_ledger(self) -> Ledger:
-        """Create a test ledger configuration."""
-        return Ledger(
+    @pytest.fixture
+    def database_url(self):
+        """Fixture providing MySQL database URL for testing."""
+        return os.environ['DATABASE_ASYNC_TEST']
+    
+    async def get_or_create_account_id(self, sql_ledger_api, account_name: str) -> str:
+        """Get existing account ID by name or return the mapped ULID."""
+        # Try to find existing account by name
+        await sql_ledger_api.begin_transaction()
+        try:
+            query = {"name": account_name}
+            existing_accounts = await sql_ledger_api.query_accounts(query)
+            if existing_accounts:
+                account_id = existing_accounts[0].id
+                print(f"   Found existing account '{account_name}' with ID: {account_id}")
+                return account_id
+        except Exception as e:
+            print(f"   No existing account found for '{account_name}': {e}")
+        finally:
+            await sql_ledger_api.end_transaction()
+        
+        # Return the mapped ULID for this account name
+        # Find the original key name for this account
+        for original_key, ulid_id in ACCOUNT_ID_MAPPING.items():
+            if original_key in account_name.lower().replace(" ", "_").replace("–", "_").replace("/", "_"):
+                return ulid_id
+        
+        # Fallback: generate new ULID if no mapping found
+        return str(ULID())
+    
+    @pytest.fixture
+    def sql_ledger_api(self, database_url):
+        """Fixture providing SQLLedgerAPI instance."""
+        ledger = Ledger(
             id=1,
             accounts=[],
             has_journal=True,
             has_transactions=True,
             config={"test": True}
         )
+        return SQLLedgerAPI(ledger, database_url)
     
-    def create_test_accounts(self) -> List[LedgerAccount]:
-        """Create test accounts for testing."""
+    @pytest.fixture
+    def account_mapping(self):
+        """Generate fresh account mapping for each test."""
+        return generate_session_account_mapping()
+    
+    @pytest.fixture
+    def tx_builder(self, account_mapping):
+        """Fixture providing transaction builder with comprehensive account IDs using ULIDs."""
+        account_ids = {
+            # Asset accounts
+            "cash_bank": account_mapping["cash"],
+            "ar_processor": account_mapping["ar_processor"], 
+            
+            # Liability accounts
+            "unearned_revenue": account_mapping["unearned_revenue"],
+            "tax_payable": account_mapping["tax_payable"],
+            "promo_liability": account_mapping["promo_liability"],
+            
+            # Income accounts
+            "revenue_product_a": account_mapping["revenue_product_a"],
+            "promo_revenue_product_a": account_mapping["promo_revenue_product_a"],
+            
+            # Expense accounts
+            "service_fees_expense": account_mapping["service_fees_expense"],
+            "promo_expense": account_mapping["promo_expense"],
+        }
+        return LedgerTransactionBuilder(account_ids)
+    
+    @pytest.fixture
+    def comprehensive_accounts(self, account_mapping):
+        """Create comprehensive chart of accounts for testing with ULID IDs."""
         return [
+            # ============= ASSET ACCOUNTS =============
             LedgerAccount(
-                id="cash",
-                name="Cash Account",
+                id=account_mapping["cash"],
+                name="Cash/Bank Account",
                 account_type=AccountType.ASSET,
                 side=LedgerSide.DEBIT,
-                owner_id=1,
+                owner_id=100,
                 is_promo=False,
-                decimals=2,
+                decimals=DECIMALS,
                 currency="USD",
-                details={"test": "account"},
+                details={"entity": "Company"},
                 history=True
             ),
             LedgerAccount(
-                id="revenue",
-                name="Revenue Account", 
+                id=account_mapping["ar_processor"],
+                name="Accounts Receivable (Processor)",
+                account_type=AccountType.ASSET,
+                side=LedgerSide.DEBIT,
+                owner_id=100,
+                is_promo=False,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
+            ),
+            
+            # ============= LIABILITY ACCOUNTS =============
+            LedgerAccount(
+                id=account_mapping["unearned_revenue"],
+                name="Unearned Revenue",
+                account_type=AccountType.LIABILITY,
+                side=LedgerSide.CREDIT,
+                owner_id=200,
+                is_promo=False,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Customer"},
+                history=True
+            ),
+            LedgerAccount(
+                id=account_mapping["tax_payable"],
+                name="Tax Payable",
+                account_type=AccountType.LIABILITY,
+                side=LedgerSide.CREDIT,
+                owner_id=100,
+                is_promo=False,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
+            ),
+            LedgerAccount(
+                id=account_mapping["promo_liability"],
+                name="Promo Credit Liability",
+                account_type=AccountType.LIABILITY,
+                side=LedgerSide.CREDIT,
+                owner_id=200,
+                is_promo=True,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Customer"},
+                history=True
+            ),
+            
+            # ============= INCOME ACCOUNTS =============
+            LedgerAccount(
+                id=account_mapping["revenue_product_a"],
+                name="Revenue – Product A",
                 account_type=AccountType.INCOME,
                 side=LedgerSide.CREDIT,
-                owner_id=1,
+                owner_id=100,
                 is_promo=False,
-                decimals=2,
+                decimals=DECIMALS,
                 currency="USD",
-                details=None,
+                details={"entity": "Company"},
                 history=True
             ),
             LedgerAccount(
-                id="expenses",
-                name="Expenses Account",
+                id=account_mapping["promo_revenue_product_a"],
+                name="Promo Revenue – Product A",
+                account_type=AccountType.INCOME,
+                side=LedgerSide.CREDIT,
+                owner_id=100,
+                is_promo=True,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
+            ),
+            
+            # ============= EXPENSE ACCOUNTS =============
+            LedgerAccount(
+                id=account_mapping["service_fees_expense"],
+                name="Service Fees Expense",
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
-                owner_id=1,
+                owner_id=100,
                 is_promo=False,
-                decimals=2,
+                decimals=DECIMALS,
                 currency="USD",
-                details=None,
+                details={"entity": "Company"},
                 history=True
-            )
-        ]
-    
-    def create_test_transfers(self) -> List[LedgerTransfer]:
-        """Create test transfers for testing."""
-        return [
-            LedgerTransfer(
-                id=str(uuid.uuid4()),
-                debit_account_id="cash",
-                credit_account_id="revenue",
-                amount=10000,  # $100.00
-                ts_created=datetime.now(timezone.utc),
             ),
-            LedgerTransfer(
-                id=str(uuid.uuid4()),
-                debit_account_id="expenses",
-                credit_account_id="cash",
-                amount=2500,  # $25.00
-                ts_created=datetime.now(timezone.utc),
-            )
-        ]
-
-
-class TestSQLLedgerAPI(TestLedgerAPI):
-    """Test class for SQL Ledger API implementation."""
-    
-    @pytest.fixture(params=['mysql'])
-    def database_url(self, request):
-        """Fixture providing database URL for testing."""
-        return os.environ['DATABASE_ASYNC_TEST']
-    
-    @pytest_asyncio.fixture
-    async def sql_ledger_api(self, database_url):
-        """Fixture providing SQLLedgerAPI instance."""
-        ledger = self.create_test_ledger()
-        api = SQLLedgerAPI(ledger, database_url)
-        yield api
-    
-    @pytest.mark.asyncio
-    async def test_init(self, sql_ledger_api):
-        """Test SQLLedgerAPI initialization."""
-        assert sql_ledger_api.ledger is not None
-        assert sql_ledger_api.engine is not None
-        assert sql_ledger_api.SessionLocal is not None
-    
-    @pytest.mark.asyncio
-    async def test_begin_end_transaction(self, sql_ledger_api):
-        """Test transaction lifecycle."""
-        # Test begin transaction
-        await sql_ledger_api.begin_transaction()
-        assert sql_ledger_api._session is not None
-        
-        # Test end transaction
-        await sql_ledger_api.end_transaction()
-        assert sql_ledger_api._session is None
-    
-    @pytest.mark.asyncio
-    async def test_begin_transaction_twice_raises_error(self, sql_ledger_api):
-        """Test that beginning a transaction twice raises an error."""
-        await sql_ledger_api.begin_transaction()
-        
-        with pytest.raises(RuntimeError, match="Transaction already active"):
-            await sql_ledger_api.begin_transaction()
-        
-        await sql_ledger_api.end_transaction()
-    
-    @pytest.mark.asyncio
-    async def test_end_transaction_without_begin_raises_error(self, sql_ledger_api):
-        """Test that ending a transaction without begin raises an error."""
-        with pytest.raises(RuntimeError, match="No active transaction"):
-            await sql_ledger_api.end_transaction()
-    
-    @pytest.mark.asyncio
-    async def test_rollback_transaction(self, sql_ledger_api):
-        """Test transaction rollback."""
-        await sql_ledger_api.begin_transaction()
-        assert sql_ledger_api._session is not None
-        
-        await sql_ledger_api.cancel_transaction()
-        assert sql_ledger_api._session is None
-    
-    @pytest.mark.asyncio
-    async def test_create_accounts(self, sql_ledger_api):
-        """Test creating accounts."""
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Verify accounts were created
-        await sql_ledger_api.begin_transaction()
-        retrieved_accounts = await sql_ledger_api.lookup_accounts(["cash", "revenue", "expenses"])
-        await sql_ledger_api.end_transaction()
-        
-        assert len(retrieved_accounts) == 3
-        assert any(acc.id == "cash" for acc in retrieved_accounts)
-        assert any(acc.id == "revenue" for acc in retrieved_accounts)
-        assert any(acc.id == "expenses" for acc in retrieved_accounts)
-    
-    @pytest.mark.asyncio
-    async def test_create_transfers(self, sql_ledger_api):
-        """Test creating transfers."""
-        # First create accounts
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Then create transfers
-        transfers = self.create_test_transfers()
-        transfer_transactions = [LedgerTransferTransaction(transfers=transfers)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_transfers(transfer_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Verify transfers were created
-        await sql_ledger_api.begin_transaction()
-        transfer_ids = [t.id for t in transfers]
-        retrieved_transfers = await sql_ledger_api.lookup_transfers(transfer_ids)
-        await sql_ledger_api.end_transaction()
-        
-        assert len(retrieved_transfers) == 2
-    
-    @pytest.mark.asyncio
-    async def test_account_balance_updates(self, sql_ledger_api):
-        """Test that account balances are updated by triggers."""
-        # Create accounts
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Check initial balances
-        await sql_ledger_api.begin_transaction()
-        cash_balance = await sql_ledger_api.get_account_balance("cash")
-        revenue_balance = await sql_ledger_api.get_account_balance("revenue")
-        await sql_ledger_api.end_transaction()
-        
-        assert cash_balance == 0
-        assert revenue_balance == 0
-        
-        # Create a transfer
-        transfer = LedgerTransfer(
-            id=str(uuid.uuid4()),
-            debit_account_id="cash",      # Cash increases (debit)
-            credit_account_id="revenue",  # Revenue increases (credit)
-            amount=10000,  # $100.00
-            ts_created=datetime.now(timezone.utc),
-        )
-        
-        transfer_transactions = [LedgerTransferTransaction(transfers=[transfer])]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_transfers(transfer_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Check updated balances
-        await sql_ledger_api.begin_transaction()
-        cash_balance = await sql_ledger_api.get_account_balance("cash")
-        revenue_balance = await sql_ledger_api.get_account_balance("revenue")
-        await sql_ledger_api.end_transaction()
-        
-        # In the transfer, revenue is the source (credit account), so it loses money
-        # Cash is the destination (debit account), so it gains money
-        assert cash_balance == 10000   # Cash gained $100
-        assert revenue_balance == -10000  # Revenue lost $100 (should actually be credited)
-    
-    @pytest.mark.asyncio
-    async def test_query_accounts(self, sql_ledger_api):
-        """Test querying accounts."""
-        # Create accounts
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Query by account ID
-        await sql_ledger_api.begin_transaction()
-        query: LedgerQuery = {"account_id": "cash"}
-        results = await sql_ledger_api.query_accounts(query)
-        await sql_ledger_api.end_transaction()
-        
-        assert len(results) == 1
-        assert results[0].id == "cash"
-        assert results[0].name == "Cash Account"
-        
-        # Query by owner ID
-        await sql_ledger_api.begin_transaction()
-        query = {"owner_id": 1}
-        results = await sql_ledger_api.query_accounts(query)
-        await sql_ledger_api.end_transaction()
-        
-        assert len(results) == 3
-    
-    @pytest.mark.asyncio
-    async def test_query_transfers(self, sql_ledger_api):
-        """Test querying transfers."""
-        # Setup accounts and transfers
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        transfers = self.create_test_transfers()
-        transfer_transactions = [LedgerTransferTransaction(transfers=transfers)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_transfers(transfer_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Query by account ID
-        await sql_ledger_api.begin_transaction()
-        query: LedgerQuery = {"account_id": "cash"}
-        results = await sql_ledger_api.query_transfers(query)
-        await sql_ledger_api.end_transaction()
-        
-        # Cash should be involved in both transfers
-        assert len(results) == 2
-    
-    @pytest.mark.asyncio
-    async def test_get_account_transfers(self, sql_ledger_api):
-        """Test getting transfers for a specific account."""
-        # Setup accounts and transfers
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        transfers = self.create_test_transfers()
-        transfer_transactions = [LedgerTransferTransaction(transfers=transfers)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_transfers(transfer_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Get transfers for cash account
-        await sql_ledger_api.begin_transaction()
-        filter: LedgerAccountFilter = {
-            "account_id": "cash",
-            "limit": 10
-        }
-        results = await sql_ledger_api.get_account_transfers(filter)
-        await sql_ledger_api.end_transaction()
-        
-        assert len(results) == 2
-    
-    @pytest.mark.asyncio
-    async def test_create_journal_entries(self, sql_ledger_api):
-        """Test creating journal entries."""
-        # Create accounts first
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Create journal entries
-        entries = [
-            LedgerJournalEntry(
-                id=str(uuid.uuid4()),
-                account_id="cash",
-                debit=10000,
-                credit=None,
-                ts_created=datetime.now(timezone.utc),
-                description="Cash debit"
+            LedgerAccount(
+                id=account_mapping["promo_expense"],
+                name="Promo Credit Expense",
+                account_type=AccountType.EXPENSE,
+                side=LedgerSide.DEBIT,
+                owner_id=100,
+                is_promo=True,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
             ),
-            LedgerJournalEntry(
-                id=str(uuid.uuid4()),
-                account_id="revenue",
-                debit=None,
-                credit=10000,
-                ts_created=datetime.now(timezone.utc),
-                description="Revenue credit"
-            )
         ]
+
+    def display_chart_of_accounts(self, accounts: List[LedgerAccount]):
+        """Display chart of accounts in tabular format."""
+        print("\n" + "=" * 100)
+        print("COMPREHENSIVE CHART OF ACCOUNTS")
+        print("=" * 100)
         
-        entry_transactions = [LedgerJournalTransaction(entries=entries)]
+        chart_data = []
+        for account in accounts:
+            chart_data.append([
+                account.id,
+                account.name,
+                account.account_type.value.title(),
+                account.side.value.title(),
+                account.owner_id,
+                "Yes" if account.is_promo else "No",
+                account.details.get("entity", "N/A")
+            ])
         
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_journal_entries(entry_transactions)
-        await sql_ledger_api.end_transaction()
+        headers = ['Account ID', 'Account Name', 'Type', 'Normal Side', 'Owner ID', 'Promotional', 'Entity']
+        print(f"\n{tabulate(chart_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'left', 'center', 'center', 'center', 'left'])}")
+
+    def display_account_balances(self, accounts: List[LedgerAccount], balances: Dict[str, int]):
+        """Display account balances in tabular format."""
+        print("\n" + "=" * 80)
+        print("ACCOUNT BALANCES")
+        print("=" * 80)
         
-        # Verify entries were created
-        await sql_ledger_api.begin_transaction()
-        entry_ids = [e.id for e in entries]
-        retrieved_entries = await sql_ledger_api.lookup_entries(entry_ids)
-        await sql_ledger_api.end_transaction()
+        # Group accounts by type
+        accounts_by_type = {}
+        for account in accounts:
+            account_type = account.account_type.value.title()
+            if account_type not in accounts_by_type:
+                accounts_by_type[account_type] = []
+            accounts_by_type[account_type].append(account)
         
-        assert len(retrieved_entries) == 2
-    
-    @pytest.mark.asyncio
-    async def test_query_journal(self, sql_ledger_api):
-        """Test querying journal entries."""
-        # Setup accounts and journal entries
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
+        # Display each account type
+        for account_type in sorted(accounts_by_type.keys()):
+            print(f"\n{account_type.upper()} ACCOUNTS:")
+            print("=" * 80)
+            
+            type_accounts = accounts_by_type[account_type]
+            balance_data = []
+            type_total = 0
+            
+            for account in type_accounts:
+                balance = balances.get(account.id, 0)
+                balance_dollars = Decimal(balance) / SCALE
+                balance_str = fmt_decimal(balance_dollars)
+                
+                if balance < 0:
+                    balance_str = f"({fmt_decimal(abs(balance_dollars))})"
+                
+                # Determine balance type based on account normal side and balance
+                balance_type = ""
+                if balance > 0:
+                    balance_type = "Dr" if account.side == LedgerSide.DEBIT else "Cr"
+                elif balance < 0:
+                    balance_type = "Cr" if account.side == LedgerSide.DEBIT else "Dr"
+                else:
+                    balance_type = "-"
+                
+                balance_data.append([
+                    account.id,
+                    account.name,
+                    balance_str,
+                    balance_type,
+                    account.owner_id
+                ])
+                type_total += balance
+            
+            # Add total row
+            total_dollars = Decimal(type_total) / SCALE
+            total_str = fmt_decimal(total_dollars)
+            if type_total < 0:
+                total_str = f"({fmt_decimal(abs(total_dollars))})"
+            
+            balance_data.append([
+                f"TOTAL {account_type.upper()}",
+                "",
+                total_str,
+                "Dr" if type_total >= 0 else "Cr",
+                ""
+            ])
+            
+            headers = ['Account ID', 'Account Name', 'Balance', 'Type', 'Owner ID']
+            print(f"\n{tabulate(balance_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'right', 'center', 'center'])}")
+
+    def display_transaction_summary(self, transactions: List[Dict[str, Any]]):
+        """Display transaction summary in tabular format."""
+        print("\n" + "=" * 100)
+        print("TRANSACTION EXECUTION SUMMARY")
+        print("=" * 100)
         
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
+        summary_data = []
+        for i, tx_info in enumerate(transactions, 1):
+            tx = tx_info["ledger_tx"]
+            total_amount = sum(Decimal(transfer.amount) / SCALE for transfer in tx.transfers)
+            
+            summary_data.append([
+                i,
+                tx_info["name"],
+                tx_info["description"],
+                tx.transaction_type.value,
+                tx_info["user_id"],
+                fmt_decimal(total_amount),
+                len(tx.transfers),
+                len(tx.entries) if tx.entries else 0
+            ])
         
-        entries = [
-            LedgerJournalEntry(
-                id=str(uuid.uuid4()),
-                account_id="cash",
-                debit=10000,
-                credit=None,
-                ts_created=datetime.now(timezone.utc),
-                description="Cash debit"
-            )
-        ]
-        
-        entry_transactions = [LedgerJournalTransaction(entries=entries)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_journal_entries(entry_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Query by account ID
-        await sql_ledger_api.begin_transaction()
-        query: LedgerQuery = {"account_id": "cash"}
-        results = await sql_ledger_api.query_journal(query)
-        await sql_ledger_api.end_transaction()
-        
-        assert len(results) == 1
-        assert results[0].account_id == "cash"
-        assert results[0].debit == 10000
-    
-    @pytest.mark.asyncio
-    async def test_get_account_balances_history(self, sql_ledger_api):
-        """Test getting account balance history."""
-        # Create accounts
-        accounts = self.create_test_accounts()
-        account_transactions = [LedgerAccountTransaction(accounts=accounts)]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_accounts(account_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Create a transfer to generate balance history
-        transfer = LedgerTransfer(
-            id=str(uuid.uuid4()),
-            debit_account_id="cash",
-            credit_account_id="revenue",
-            amount=10000,
-            ts_created=datetime.now(timezone.utc),
-        )
-        
-        transfer_transactions = [LedgerTransferTransaction(transfers=[transfer])]
-        
-        await sql_ledger_api.begin_transaction()
-        await sql_ledger_api.create_transfers(transfer_transactions)
-        await sql_ledger_api.end_transaction()
-        
-        # Get balance history for cash account
-        await sql_ledger_api.begin_transaction()
-        filter: LedgerAccountFilter = {
-            "account_id": "cash",
-            "limit": 10
+        headers = ['#', 'Transaction Name', 'Description', 'Type', 'User ID', 'Amount', 'Transfers', 'Journal Entries']
+        print(f"\n{tabulate(summary_data, headers=headers, tablefmt='grid', colalign=['center', 'left', 'left', 'left', 'center', 'right', 'center', 'center'])}")
+
+    def display_balance_sheet_summary(self, accounts: List[LedgerAccount], balances: Dict[str, int]):
+        """Display balance sheet summary with accounting equation verification."""
+        print("\n" + "=" * 80)
+        print("BALANCE SHEET SUMMARY & ACCOUNTING EQUATION VERIFICATION")
+        print("=" * 80)
+
+        # Calculate totals by account type
+        totals_by_type = {
+            "Asset": 0,
+            "Liability": 0,
+            "Income": 0,
+            "Expense": 0
         }
-        results = await sql_ledger_api.get_account_balances(filter)
-        await sql_ledger_api.end_transaction()
+
+        for account in accounts:
+            account_type = account.account_type.value.title()
+            balance = balances.get(account.id, 0)
+            
+            # For liability and income accounts, we show the credit balance as positive
+            if account_type in ["Liability", "Income"]:
+                totals_by_type[account_type] += -balance
+            else:
+                totals_by_type[account_type] += balance
+
+        # Display totals
+        summary_data = []
+        for account_type, total_micro in totals_by_type.items():
+            total_dollars = Decimal(total_micro) / SCALE
+            summary_data.append([
+                f"Total {account_type}s",
+                fmt_decimal(total_dollars)
+            ])
+
+        # Calculate net equity (Income - Expenses)
+        net_equity_micro = totals_by_type["Income"] - totals_by_type["Expense"]
+        net_equity_dollars = Decimal(net_equity_micro) / SCALE
+        summary_data.append([
+            "Net Equity (Income - Expenses)",
+            fmt_decimal(net_equity_dollars)
+        ])
+
+        # Verify accounting equation: Assets = Liabilities + Equity
+        assets_dollars = Decimal(totals_by_type["Asset"]) / SCALE
+        liabilities_dollars = Decimal(totals_by_type["Liability"]) / SCALE
         
-        # Should have balance history entries
-        assert len(results) >= 1
+        equation_check = assets_dollars - (liabilities_dollars + net_equity_dollars)
+        summary_data.append([
+            "Accounting Equation Check",
+            fmt_decimal(equation_check)
+        ])
         
+        equation_holds = abs(equation_check) < Decimal('0.000001')
+        summary_data.append([
+            "Equation Balanced",
+            "✓ YES" if equation_holds else "✗ NO"
+        ])
+
+        headers = ['Category', 'Amount']
+        print(f"\n{tabulate(summary_data, headers=headers, tablefmt='grid', colalign=['left', 'right'])}")
+        
+        print(f"\nAccounting Equation: Assets = Liabilities + Equity")
+        print(f"{fmt_decimal(assets_dollars)} = {fmt_decimal(liabilities_dollars)} + {fmt_decimal(net_equity_dollars)}")
+
     @pytest.mark.asyncio
-    async def test_conversion_methods(self, sql_ledger_api):
-        """Test conversion methods between SQL models and Pydantic models."""
-        
-        # Test account conversion
-        sql_account = SQLAccount(
-            id="test_account",
-            name="Test Account",
-            account_type="asset",
-            side="debit",
-            owner_id=1,
-            is_promo=False,
-            decimals=2,
-            currency="USD",
-            details='{"test": true}',
-            history=True,
-            balance=1000
-        )
-        
-        ledger_account = sql_ledger_api._convert_sql_account_to_ledger_account(sql_account)
-        assert ledger_account.id == "test_account"
-        assert ledger_account.name == "Test Account"
-        assert ledger_account.account_type == AccountType.ASSET
-        assert ledger_account.side == LedgerSide.DEBIT
-        assert ledger_account.details == {"test": True}
-        
-        # Test transfer conversion
-        sql_transfer = SQLTransfer(
-            id="test_transfer",
-            debit_account_id="account1",
-            credit_account_id="account2",
-            amount=5000,
-            ts_created=datetime.now(timezone.utc),
-        )
-        
-        ledger_transfer = await sql_ledger_api._convert_sql_transfer_to_ledger_transfer(sql_transfer, with_balance=False)
-        assert ledger_transfer.id == "test_transfer"
-        assert ledger_transfer.debit_account_id == "account1"
-        assert ledger_transfer.credit_account_id == "account2"
-        assert ledger_transfer.amount == 5000
-        
-        # Test journal entry conversion
-        sql_entry = SQLJournalEntry(
-            id="test_entry",
-            account_id="account1",
-            debit=1000,
-            credit=None,
-            ts_created=datetime.now(timezone.utc),
-            description="Test entry"
-        )
-        
-        ledger_entry = sql_ledger_api._convert_sql_entry_to_ledger_entry(sql_entry)
-        assert ledger_entry.id == "test_entry"
-        assert ledger_entry.account_id == "account1"
-        assert ledger_entry.debit == 1000
-        assert ledger_entry.credit is None
-    
-    @pytest.mark.asyncio
-    async def test_error_handling(self, sql_ledger_api):
-        """Test error handling scenarios."""
-        # Test get_session without active transaction
-        with pytest.raises(RuntimeError, match="No active transaction"):
-            sql_ledger_api.get_session()
-        
-        # Test lookup on non-existent accounts
-        await sql_ledger_api.begin_transaction()
-        results = await sql_ledger_api.lookup_accounts(["non_existent"])
-        await sql_ledger_api.end_transaction()
-        
-        assert len(results) == 0
-        
-        # Test get_account_balance for non-existent account
-        await sql_ledger_api.begin_transaction()
-        balance = await sql_ledger_api.get_account_balance("non_existent")
-        await sql_ledger_api.end_transaction()
-        
-        assert balance == 0
-
-
-class TestLedgerModels:
-    """Test the Pydantic models used in the Ledger API."""
-    
-    def test_ledger_account_creation(self):
-        """Test creating a LedgerAccount."""
-        account = LedgerAccount(
-            id="test_account",
-            name="Test Account",
-            account_type=AccountType.ASSET,
-            side=LedgerSide.DEBIT,
-            owner_id=1,
-            is_promo=False,
-            decimals=2,
-            currency="USD",
-            details={"test": True},
-            history=True
-        )
-        
-        assert account.id == "test_account"
-        assert account.name == "Test Account"
-        assert account.account_type == AccountType.ASSET
-        assert account.side == LedgerSide.DEBIT
-        assert account.owner_id == 1
-        assert account.is_promo is False
-        assert account.decimals == 2
-        assert account.currency == "USD"
-        assert account.details == {"test": True}
-        assert account.history is True
-    
-    def test_ledger_transfer_creation(self):
-        """Test creating a LedgerTransfer."""
-        test_timestamp = datetime.now(timezone.utc)
-        transfer = LedgerTransfer(
-            id="test_transfer",
-            debit_account_id="account1",
-            credit_account_id="account2",
-            amount=10000,
-            ts_created=test_timestamp,
-        )
-        
-        assert transfer.id == "test_transfer"
-        assert transfer.debit_account_id == "account1"
-        assert transfer.credit_account_id == "account2"
-        assert transfer.amount == 10000
-        assert transfer.ts_created == test_timestamp
-    
-    def test_ledger_transaction_creation(self):
-        """Test creating a LedgerTransaction."""
-        transaction = LedgerTransaction(
-            id=1,
-            transaction_type=TransactionType.PAYMENT,
-            entries=None,
-            transfers=[],
-            ts_created=datetime.now(timezone.utc),
-            user_id=1,
-            reference="REF123",
-            description="Test transaction",
-            details={"test": True}
-        )
-        
-        assert transaction.id == 1
-        assert transaction.transaction_type == TransactionType.PAYMENT
-        assert transaction.entries is None
-        assert transaction.transfers == []
-        assert transaction.user_id == 1
-        assert transaction.reference == "REF123"
-        assert transaction.description == "Test transaction"
-        assert transaction.details == {"test": True}
-    
-    def test_account_type_enum(self):
-        """Test AccountType enum values."""
-        assert AccountType.ASSET.value == "asset"
-        assert AccountType.LIABILITY.value == "liability"
-        assert AccountType.INCOME.value == "income"
-        assert AccountType.EXPENSE.value == "expense"
-    
-    def test_ledger_side_enum(self):
-        """Test LedgerSide enum values."""
-        assert LedgerSide.DEBIT.value == "debit"
-        assert LedgerSide.CREDIT.value == "credit"
-    
-    def test_transaction_type_enum(self):
-        """Test TransactionType enum values."""
-        assert TransactionType.PAYMENT.value == "PAYMENT"
-        assert TransactionType.PURCHASE.value == "PURCHASE"
-        assert TransactionType.SETTLEMENT.value == "SETTLEMENT"
-        assert TransactionType.EXPENSE.value == "EXPENSE"
-        assert TransactionType.TAX.value == "TAX"
-        assert TransactionType.TAX_REMIT.value == "TAX_REMIT"
-        assert TransactionType.REFUND.value == "REFUND"
-        assert TransactionType.PROMO.value == "PROMO"
-        assert TransactionType.USE_PROMO.value == "USE_PROMO"
-        assert TransactionType.CANCEL_PROMO.value == "CANCEL_PROMO"
-
-
-class TestSQLLedgerIntegration:
-    """Integration tests for the SQL Ledger API."""
-    
-    @pytest.mark.asyncio
-    async def test_complete_accounting_workflow(self):
-        """Test a complete accounting workflow with multiple transactions."""
-        # Use MySQL database from environment variable
-        database_url = os.environ['DATABASE_ASYNC_TEST']
-
-        print(f"🗄️  Using MySQL database: {database_url}")
+    async def test_comprehensive_transaction_workflow(self, sql_ledger_api, tx_builder, comprehensive_accounts):
+        """Test comprehensive workflow with all transaction types from ledger_tx_builder.py."""
+        print("\n🏦 COMPREHENSIVE LEDGER API TEST - ALL TRANSACTION TYPES (MySQL)")
+        print("=" * 100)
         
         try:
-            # Initialize ledger
-            ledger = Ledger(
-                id=1,
-                accounts=[],
-                has_journal=True,
-                has_transactions=True,
-                config={"name": "Test Ledger"}
-            )
+            # Display chart of accounts
+            self.display_chart_of_accounts(comprehensive_accounts)
             
-            api = SQLLedgerAPI(ledger, database_url)
+            # Check for existing accounts and create only those that don't exist
+            print("\n📊 Checking for existing accounts or creating new ones...")
+            final_accounts = []
+            accounts_to_create = []
             
-            # Create accounts
-            accounts = [
-                LedgerAccount(
-                    id="cash",
-                    name="Cash",
-                    account_type=AccountType.ASSET,
-                    side=LedgerSide.DEBIT,
-                    owner_id=1,
-                    is_promo=False,
-                    decimals=2,
-                    currency="USD",
-                    details=None,
-                    history=True
-                ),
-                LedgerAccount(
-                    id="sales",
-                    name="Sales Revenue",
-                    account_type=AccountType.INCOME,
-                    side=LedgerSide.CREDIT,
-                    owner_id=1,
-                    is_promo=False,
-                    decimals=2,
-                    currency="USD",
-                    details=None,
-                    history=True
-                ),
-                LedgerAccount(
-                    id="expenses",
-                    name="Operating Expenses",
-                    account_type=AccountType.EXPENSE,
-                    side=LedgerSide.DEBIT,
-                    owner_id=1,
-                    is_promo=False,
-                    decimals=2,
-                    currency="USD",
-                    details=None,
-                    history=True
-                )
-            ]
+            # Look up each account by name
+            for account in comprehensive_accounts:
+                await sql_ledger_api.begin_transaction()
+                try:
+                    query = {"name": account.name}
+                    existing_accounts = await sql_ledger_api.query_accounts(query)
+                    if existing_accounts:
+                        existing_account = existing_accounts[0]
+                        print(f"   Found existing account '{account.name}' with ID: {existing_account.id}")
+                        # Use the existing account ID but preserve other properties
+                        reused_account = LedgerAccount(
+                            id=existing_account.id,
+                            name=account.name,
+                            account_type=account.account_type,
+                            side=account.side,
+                            owner_id=account.owner_id,
+                            is_promo=account.is_promo,
+                            decimals=account.decimals,
+                            currency=account.currency,
+                            details=account.details,
+                            history=account.history
+                        )
+                        final_accounts.append(reused_account)
+                    else:
+                        print(f"   No existing account found for '{account.name}', will create with ULID: {account.id}")
+                        accounts_to_create.append(account)
+                        final_accounts.append(account)
+                except Exception as e:
+                    print(f"   Error checking for account '{account.name}': {e}")
+                    accounts_to_create.append(account)
+                    final_accounts.append(account)
+                finally:
+                    await sql_ledger_api.end_transaction()
             
-            # Create accounts
-            await api.begin_transaction()
-            await api.create_accounts([LedgerAccountTransaction(accounts=accounts)])
-            await api.end_transaction()
+            # Create only the accounts that don't exist
+            if accounts_to_create:
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=accounts_to_create)])
+                await sql_ledger_api.end_transaction()
+                print(f"   ✅ Created {len(accounts_to_create)} new accounts")
+            else:
+                print("   ✅ All accounts already exist, no new accounts created")
             
-            # Create transfers
-            transfers = [
-                # Sale: Cash increases, Sales revenue increases
-                LedgerTransfer(
-                    id=str(uuid.uuid4()),
-                    debit_account_id="cash",
-                    credit_account_id="sales",
-                    amount=50000,  # $500.00
-                    ts_created=datetime.now(timezone.utc),
-                ),
-                # Expense: Expenses increase, Cash decreases
-                LedgerTransfer(
-                    id=str(uuid.uuid4()),
-                    debit_account_id="expenses",
-                    credit_account_id="cash",
-                    amount=15000,  # $150.00
-                    ts_created=datetime.now(timezone.utc),
-                )
-            ]
+            # Use the final account list (mix of existing and newly created)
+            comprehensive_accounts = final_accounts
             
-            await api.begin_transaction()
-            await api.create_transfers([LedgerTransferTransaction(transfers=transfers)])
-            await api.end_transaction()
+            # Update transaction builder with actual account IDs
+            print("\n🔧 Updating transaction builder with actual account IDs...")
+            account_ids = {}
+            for account in comprehensive_accounts:
+                # Map account names to their actual IDs
+                if "Cash" in account.name:
+                    account_ids["cash_bank"] = account.id
+                elif "Accounts Receivable" in account.name:
+                    account_ids["ar_processor"] = account.id
+                elif "Unearned Revenue" in account.name:
+                    account_ids["unearned_revenue"] = account.id
+                elif "Tax Payable" in account.name:
+                    account_ids["tax_payable"] = account.id
+                elif "Promo Credit Liability" in account.name:
+                    account_ids["promo_liability"] = account.id
+                elif "Revenue – Product A" in account.name and not account.is_promo:
+                    account_ids["revenue_product_a"] = account.id
+                elif "Promo Revenue – Product A" in account.name:
+                    account_ids["promo_revenue_product_a"] = account.id
+                elif "Service Fees Expense" in account.name:
+                    account_ids["service_fees_expense"] = account.id
+                elif "Promo Credit Expense" in account.name:
+                    account_ids["promo_expense"] = account.id
             
-            # Check final balances
-            await api.begin_transaction()
-            cash_balance = await api.get_account_balance("cash")
-            sales_balance = await api.get_account_balance("sales")
-            expenses_balance = await api.get_account_balance("expenses")
-            await api.end_transaction()
+            # Create new transaction builder with updated IDs
+            tx_builder = LedgerTransactionBuilder(account_ids)
+            print(f"   ✅ Updated transaction builder with {len(account_ids)} account mappings")
             
-            # Expected balances:
-            # Cash: +500 - 150 = +350
-            # Sales: -500 (credit account, so negative balance means positive revenue)
-            # Expenses: +150
-            assert cash_balance == 35000   # $350.00
-            assert sales_balance == -50000  # -$500.00 (credit balance)
-            assert expenses_balance == 15000  # $150.00
+            # Get initial balances
+            await sql_ledger_api.begin_transaction()
+            initial_balances = {}
+            for account in comprehensive_accounts:
+                initial_balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
+            await sql_ledger_api.end_transaction()
             
-            # Query account history
-            await api.begin_transaction()
-            cash_history = await api.get_account_balances({"account_id": "cash", "limit": 10})
-            await api.end_transaction()
+            print("\n💰 Initial account balances:")
+            self.display_account_balances(comprehensive_accounts, initial_balances)
             
-            # Should have balance history from the transfers
-            assert len(cash_history) >= 2
+            # Create comprehensive transaction suite
+            print("\n📝 Creating comprehensive business transaction suite...")
+            transactions = await self.create_comprehensive_transaction_suite(tx_builder)
+            
+            # Execute all transactions
+            print(f"\n🔄 Executing {len(transactions)} transactions...")
+            for i, tx_info in enumerate(transactions, 1):
+                print(f"   Executing transaction {i}: {tx_info['name']}")
+                
+                logical_tx = LedgerLogicalTransaction(transactions=[tx_info["ledger_tx"]])
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_transactions([logical_tx])
+                await sql_ledger_api.end_transaction()
+            
+            print("   ✅ All transactions executed successfully")
+            
+            # Display transaction summary
+            self.display_transaction_summary(transactions)
+            
+            # Get final balances
+            await sql_ledger_api.begin_transaction()
+            final_balances = {}
+            for account in comprehensive_accounts:
+                final_balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
+            await sql_ledger_api.end_transaction()
+            
+            # Display final balances
+            print("\n💰 Final account balances after all transactions:")
+            self.display_account_balances(comprehensive_accounts, final_balances)
+            
+            # Display balance sheet summary
+            self.display_balance_sheet_summary(comprehensive_accounts, final_balances)
+            
+            # Verify specific transaction effects
+            await self.verify_transaction_effects(sql_ledger_api, comprehensive_accounts, initial_balances, final_balances)
+            
+            # Display comprehensive general ledger reports
+            self.display_general_ledger(transactions)
+            print("\n")
+            self.display_transaction_register(transactions)
+            print("\n")
+            self.display_trial_balance(comprehensive_accounts, final_balances)
+            
+            print("\n✅ Comprehensive transaction workflow test completed successfully!")
             
         finally:
-            pass
+            # Clean up database connections
+            await sql_ledger_api.close()
+
+    async def create_comprehensive_transaction_suite(self, tx_builder) -> List[Dict[str, Any]]:
+        """Create a comprehensive suite of all transaction types."""
+        transactions = []
+        
+        # 1. Payment Authorization
+        tx_data = {
+            "name": "Payment Authorization",
+            "description": "Customer payment authorization for $1000",
+            "user_id": 200,
+        }
+        tx_data["ledger_tx"] = await tx_builder.payment(
+            amount=1000.00, 
+            user_id=tx_data["user_id"],
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 2. Revenue Recognition (Purchase)
+        tx_data = {
+            "name": "Revenue Recognition",
+            "description": "Recognize revenue for Product A purchase",
+            "user_id": 200,
+        }
+        tx_data["ledger_tx"] = await tx_builder.purchase(
+            user_id=tx_data["user_id"], 
+            product_amounts={"Product A": 600.00},
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 3. Settlement from Processor
+        tx_data = {
+            "name": "Payment Settlement",
+            "description": "Settlement from payment processor",
+            "user_id": 100,
+        }
+        tx_data["ledger_tx"] = await tx_builder.settlement(
+            amount=950.00,  # After processor fees
+            user_id=tx_data["user_id"],
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 4. Service Fee Expense
+        tx_data = {
+            "name": "Service Fee Expense",
+            "description": "Payment processing service fees",
+            "user_id": 100,
+        }
+        tx_data["ledger_tx"] = await tx_builder.expense(
+            amount=50.00, 
+            expense_type="service_fees",
+            user_id=tx_data["user_id"],
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 5. Tax Collection
+        tx_data = {
+            "name": "Sales Tax Collection",
+            "description": "Collect sales tax on Product A",
+            "user_id": 200,
+        }
+        tx_data["ledger_tx"] = await tx_builder.tax_collection(
+            revenue_amount=100.00, 
+            tax_amount=10.00, 
+            product="product_a",
+            user_id=tx_data["user_id"],
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 6. Tax Remittance
+        tx_data = {
+            "name": "Tax Remittance",
+            "description": "Remit collected sales tax to authority",
+            "user_id": 100,
+        }
+        tx_data["ledger_tx"] = await tx_builder.tax_remit(
+            amount=10.00,
+            user_id=tx_data["user_id"],
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 7. Promo Credit Issue
+        tx_data = {
+            "name": "Promotional Credit Issue",
+            "description": "Issue promotional credit to customer",
+            "user_id": 200,
+        }
+        tx_data["ledger_tx"] = await tx_builder.promo_issue(
+            amount=100.00, 
+            user_id=tx_data["user_id"],
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 8. Use Promo Credit
+        tx_data = {
+            "name": "Use Promotional Credit",
+            "description": "Customer uses promotional credit for Product A",
+            "user_id": 200,
+        }
+        tx_data["ledger_tx"] = await tx_builder.promo_use(
+            amount=75.00, 
+            user_id=tx_data["user_id"], 
+            product="product_a",
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        # 9. Cancel Promo Credit
+        tx_data = {
+            "name": "Cancel Promotional Credit",
+            "description": "Cancel unused promotional credit",
+            "user_id": 200,
+        }
+        tx_data["ledger_tx"] = await tx_builder.promo_cancel(
+            amount=25.00, 
+            user_id=tx_data["user_id"],
+            name=tx_data["name"],
+            description=tx_data["description"]
+        )
+        transactions.append(tx_data)
+        
+        return transactions
+
+    async def verify_transaction_effects(self, sql_ledger_api, accounts, initial_balances, final_balances):
+        """Verify that transactions had expected effects on account balances."""
+        print("\n" + "=" * 80)
+        print("TRANSACTION EFFECTS VERIFICATION")
+        print("=" * 80)
+        
+        verification_data = []
+        
+        for account in accounts:
+            initial = initial_balances[account.id]
+            final = final_balances[account.id]
+            change = final - initial
+            
+            initial_dollars = Decimal(initial) / SCALE
+            final_dollars = Decimal(final) / SCALE
+            change_dollars = Decimal(change) / SCALE
+            
+            verification_data.append([
+                account.id,
+                account.name,
+                fmt_decimal(initial_dollars),
+                fmt_decimal(final_dollars),
+                fmt_decimal(change_dollars),
+                "✓" if change != 0 else "-"
+            ])
+        
+        headers = ['Account ID', 'Account Name', 'Initial Balance', 'Final Balance', 'Change', 'Activity']
+        print(f"\n{tabulate(verification_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'right', 'right', 'right', 'center'])}")
+        
+        # Verify specific business logic
+        print("\n📋 Business Logic Verification:")
+        
+        # Find account IDs by name for verification
+        cash_id = None
+        revenue_id = None
+        unearned_id = None
+        promo_id = None
+        
+        for account in accounts:
+            if "Cash" in account.name:
+                cash_id = account.id
+            elif "Revenue – Product A" in account.name and not account.is_promo:
+                revenue_id = account.id
+            elif "Unearned Revenue" in account.name:
+                unearned_id = account.id
+            elif "Promo Credit Liability" in account.name:
+                promo_id = account.id
+        
+        # Check that cash increased from settlements but decreased from expenses and tax remittance
+        if cash_id:
+            cash_change = (final_balances[cash_id] - initial_balances[cash_id]) / SCALE
+            print(f"   • Cash net change: {fmt_decimal(cash_change)} (should reflect settlements - expenses - tax)")
+        
+        # Check that revenue accounts have credit balances (negative in our system)
+        if revenue_id:
+            revenue_balance = final_balances[revenue_id] / SCALE
+            print(f"   • Product A revenue: {fmt_decimal(revenue_balance)} (should be negative for credit balance)")
+        
+        # Check that unearned revenue decreased as revenue was recognized
+        if unearned_id:
+            unearned_change = (final_balances[unearned_id] - initial_balances[unearned_id]) / SCALE
+            print(f"   • Unearned revenue change: {fmt_decimal(unearned_change)} (should decrease as revenue recognized)")
+        
+        # Check that promo liability has remaining balance after partial use
+        if promo_id:
+            promo_balance = final_balances[promo_id] / SCALE
+            print(f"   • Promo liability balance: {fmt_decimal(promo_balance)} (should be negative for credit balance)")
+
+    @pytest.mark.asyncio
+    async def test_individual_transaction_types(self, sql_ledger_api, tx_builder, comprehensive_accounts):
+        """Test each transaction type individually to verify proper accounting."""
+        print("\n🧪 INDIVIDUAL TRANSACTION TYPE TESTS (MySQL)")
+        print("=" * 100)
+        
+        try:
+            # Check for existing accounts and create only those that don't exist
+            print("\n📊 Checking for existing accounts or creating new ones...")
+            final_accounts = []
+            accounts_to_create = []
+            
+            # Look up each account by name
+            for account in comprehensive_accounts:
+                await sql_ledger_api.begin_transaction()
+                try:
+                    query = {"name": account.name}
+                    existing_accounts = await sql_ledger_api.query_accounts(query)
+                    if existing_accounts:
+                        existing_account = existing_accounts[0]
+                        print(f"   Found existing account '{account.name}' with ID: {existing_account.id}")
+                        # Use the existing account ID but preserve other properties
+                        reused_account = LedgerAccount(
+                            id=existing_account.id,
+                            name=account.name,
+                            account_type=account.account_type,
+                            side=account.side,
+                            owner_id=account.owner_id,
+                            is_promo=account.is_promo,
+                            decimals=account.decimals,
+                            currency=account.currency,
+                            details=account.details,
+                            history=account.history
+                        )
+                        final_accounts.append(reused_account)
+                    else:
+                        print(f"   No existing account found for '{account.name}', will create with ULID: {account.id}")
+                        accounts_to_create.append(account)
+                        final_accounts.append(account)
+                except Exception as e:
+                    print(f"   Error checking for account '{account.name}': {e}")
+                    accounts_to_create.append(account)
+                    final_accounts.append(account)
+                finally:
+                    await sql_ledger_api.end_transaction()
+            
+            # Create only the accounts that don't exist
+            if accounts_to_create:
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=accounts_to_create)])
+                await sql_ledger_api.end_transaction()
+                print(f"   ✅ Created {len(accounts_to_create)} new accounts")
+            else:
+                print("   ✅ All accounts already exist, no new accounts created")
+            
+            # Use the final account list (mix of existing and newly created)
+            comprehensive_accounts = final_accounts
+            
+            # Update transaction builder with actual account IDs
+            account_ids = {}
+            for account in comprehensive_accounts:
+                if "Cash" in account.name:
+                    account_ids["cash_bank"] = account.id
+                elif "Accounts Receivable" in account.name:
+                    account_ids["ar_processor"] = account.id
+                elif "Unearned Revenue" in account.name:
+                    account_ids["unearned_revenue"] = account.id
+                elif "Tax Payable" in account.name:
+                    account_ids["tax_payable"] = account.id
+                elif "Promo Credit Liability" in account.name:
+                    account_ids["promo_liability"] = account.id
+                elif "Revenue – Product A" in account.name and not account.is_promo:
+                    account_ids["revenue_product_a"] = account.id
+                elif "Promo Revenue – Product A" in account.name:
+                    account_ids["promo_revenue_product_a"] = account.id
+                elif "Service Fees Expense" in account.name:
+                    account_ids["service_fees_expense"] = account.id
+                elif "Promo Credit Expense" in account.name:
+                    account_ids["promo_expense"] = account.id
+            
+            tx_builder = LedgerTransactionBuilder(account_ids)
+            
+            # Test each transaction type
+            transaction_types = [
+                ("payment", lambda: tx_builder.payment(amount=100.00, user_id=200, name="Test Payment")),
+                ("purchase", lambda: tx_builder.purchase(user_id=200, product_amounts={"Product A": 50.00}, name="Test Purchase")),
+                ("settlement", lambda: tx_builder.settlement(amount=95.00, user_id=100, name="Test Settlement")),
+                ("expense", lambda: tx_builder.expense(amount=10.00, expense_type="service_fees", user_id=100, name="Test Expense")),
+                ("tax_collection", lambda: tx_builder.tax_collection(revenue_amount=50.00, tax_amount=5.00, user_id=200, name="Test Tax Collection")),
+                ("tax_remit", lambda: tx_builder.tax_remit(amount=5.00, user_id=100, name="Test Tax Remit")),
+                ("promo_issue", lambda: tx_builder.promo_issue(amount=25.00, user_id=200, name="Test Promo Issue")),
+                ("promo_use", lambda: tx_builder.promo_use(amount=20.00, user_id=200, name="Test Promo Use")),
+                ("promo_cancel", lambda: tx_builder.promo_cancel(amount=5.00, user_id=200, name="Test Promo Cancel")),
+            ]
+            
+            results_data = []
+            
+            for tx_name, tx_builder_func in transaction_types:
+                print(f"\n   Testing {tx_name} transaction...")
+                
+                # Get balances before
+                await sql_ledger_api.begin_transaction()
+                balances_before = {}
+                for account in comprehensive_accounts:
+                    balances_before[account.id] = await sql_ledger_api.get_account_balance(account.id)
+                await sql_ledger_api.end_transaction()
+                
+                # Execute transaction
+                tx = await tx_builder_func()
+                logical_tx = LedgerLogicalTransaction(transactions=[tx])
+                
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_transactions([logical_tx])
+                await sql_ledger_api.end_transaction()
+                
+                # Get balances after
+                await sql_ledger_api.begin_transaction()
+                balances_after = {}
+                for account in comprehensive_accounts:
+                    balances_after[account.id] = await sql_ledger_api.get_account_balance(account.id)
+                await sql_ledger_api.end_transaction()
+                
+                # Calculate total impact
+                total_impact = sum(abs(balances_after[acc.id] - balances_before[acc.id]) for acc in comprehensive_accounts)
+                accounts_affected = sum(1 for acc in comprehensive_accounts if balances_after[acc.id] != balances_before[acc.id])
+                
+                results_data.append([
+                    tx_name.title().replace('_', ' '),
+                    tx.transaction_type.value,
+                    len(tx.transfers),
+                    len(tx.entries) if tx.entries else 0,
+                    accounts_affected,
+                    fmt_decimal(Decimal(total_impact) / SCALE),
+                    "✓"
+                ])
+            
+            # Display results
+            print(f"\n{'-' * 100}")
+            print("INDIVIDUAL TRANSACTION TYPE TEST RESULTS")
+            print(f"{'-' * 100}")
+            
+            headers = ['Transaction', 'Type', 'Transfers', 'Journal Entries', 'Accounts Affected', 'Total Impact', 'Success']
+            print(f"\n{tabulate(results_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'center', 'center', 'center', 'right', 'center'])}")
+            
+            print(f"\n✅ All {len(transaction_types)} transaction types tested successfully!")
+            
+        finally:
+            await sql_ledger_api.close()
+
+    @pytest.mark.asyncio
+    async def test_accounting_equation_balance(self, sql_ledger_api, tx_builder, comprehensive_accounts):
+        """Test that the accounting equation remains balanced after transactions."""
+        print("\n⚖️  ACCOUNTING EQUATION BALANCE TEST (MySQL)")
+        print("=" * 100)
+        
+        try:
+            # Check for existing accounts and create only those that don't exist
+            print("\n📊 Checking for existing accounts or creating new ones...")
+            final_accounts = []
+            accounts_to_create = []
+            
+            # Look up each account by name
+            for account in comprehensive_accounts:
+                await sql_ledger_api.begin_transaction()
+                try:
+                    query = {"name": account.name}
+                    existing_accounts = await sql_ledger_api.query_accounts(query)
+                    if existing_accounts:
+                        existing_account = existing_accounts[0]
+                        print(f"   Found existing account '{account.name}' with ID: {existing_account.id}")
+                        # Use the existing account ID but preserve other properties
+                        reused_account = LedgerAccount(
+                            id=existing_account.id,
+                            name=account.name,
+                            account_type=account.account_type,
+                            side=account.side,
+                            owner_id=account.owner_id,
+                            is_promo=account.is_promo,
+                            decimals=account.decimals,
+                            currency=account.currency,
+                            details=account.details,
+                            history=account.history
+                        )
+                        final_accounts.append(reused_account)
+                    else:
+                        print(f"   No existing account found for '{account.name}', will create with ULID: {account.id}")
+                        accounts_to_create.append(account)
+                        final_accounts.append(account)
+                except Exception as e:
+                    print(f"   Error checking for account '{account.name}': {e}")
+                    accounts_to_create.append(account)
+                    final_accounts.append(account)
+                finally:
+                    await sql_ledger_api.end_transaction()
+            
+            # Create only the accounts that don't exist
+            if accounts_to_create:
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=accounts_to_create)])
+                await sql_ledger_api.end_transaction()
+                print(f"   ✅ Created {len(accounts_to_create)} new accounts")
+            else:
+                print("   ✅ All accounts already exist, no new accounts created")
+            
+            # Use the final account list (mix of existing and newly created)
+            comprehensive_accounts = final_accounts
+            
+            # Update transaction builder with actual account IDs
+            account_ids = {}
+            for account in comprehensive_accounts:
+                if "Cash" in account.name:
+                    account_ids["cash_bank"] = account.id
+                elif "Accounts Receivable" in account.name:
+                    account_ids["ar_processor"] = account.id
+                elif "Unearned Revenue" in account.name:
+                    account_ids["unearned_revenue"] = account.id
+                elif "Tax Payable" in account.name:
+                    account_ids["tax_payable"] = account.id
+                elif "Promo Credit Liability" in account.name:
+                    account_ids["promo_liability"] = account.id
+                elif "Revenue – Product A" in account.name and not account.is_promo:
+                    account_ids["revenue_product_a"] = account.id
+                elif "Promo Revenue – Product A" in account.name:
+                    account_ids["promo_revenue_product_a"] = account.id
+                elif "Service Fees Expense" in account.name:
+                    account_ids["service_fees_expense"] = account.id
+                elif "Promo Credit Expense" in account.name:
+                    account_ids["promo_expense"] = account.id
+            
+            tx_builder = LedgerTransactionBuilder(account_ids)
+            
+            # Execute a series of transactions
+            transactions = await self.create_comprehensive_transaction_suite(tx_builder)
+            
+            equation_checks = []
+            
+            # Check equation before any transactions
+            await sql_ledger_api.begin_transaction()
+            balances = {}
+            for account in comprehensive_accounts:
+                balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
+            await sql_ledger_api.end_transaction()
+            
+            is_balanced = self.check_accounting_equation(comprehensive_accounts, balances)
+            equation_checks.append(["Initial State", "0", "✓" if is_balanced else "✗"])
+            
+            # Execute transactions one by one and check equation after each
+            for i, tx_info in enumerate(transactions, 1):
+                logical_tx = LedgerLogicalTransaction(transactions=[tx_info["ledger_tx"]])
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_transactions([logical_tx])
+                await sql_ledger_api.end_transaction()
+                
+                # Check equation
+                await sql_ledger_api.begin_transaction()
+                balances = {}
+                for account in comprehensive_accounts:
+                    balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
+                await sql_ledger_api.end_transaction()
+                
+                is_balanced = self.check_accounting_equation(comprehensive_accounts, balances)
+                equation_checks.append([
+                    tx_info["name"][:30],
+                    str(i),
+                    "✓" if is_balanced else "✗"
+                ])
+            
+            # Display results
+            headers = ['Transaction/State', 'Step', 'Equation Balanced']
+            print(f"\n{tabulate(equation_checks, headers=headers, tablefmt='grid', colalign=['left', 'center', 'center'])}")
+            
+            # Final equation verification
+            assets, liabilities, equity = self.calculate_equation_components(comprehensive_accounts, balances)
+            print(f"\nFinal Accounting Equation Check:")
+            print(f"Assets = Liabilities + Equity")
+            print(f"{fmt_decimal(assets)} = {fmt_decimal(liabilities)} + {fmt_decimal(equity)}")
+            print(f"Difference: {fmt_decimal(assets - (liabilities + equity))}")
+            
+            # Assert that equation is balanced
+            assert is_balanced, "Accounting equation is not balanced after all transactions"
+            print("\n✅ Accounting equation remains balanced throughout all transactions!")
+            
+        finally:
+            await sql_ledger_api.close()
+
+    def check_accounting_equation(self, accounts: List[LedgerAccount], balances: Dict[str, int]) -> bool:
+        """Check if the accounting equation (Assets = Liabilities + Equity) is balanced."""
+        assets, liabilities, equity = self.calculate_equation_components(accounts, balances)
+        difference = abs(assets - (liabilities + equity))
+        return difference < Decimal('0.000001')
+
+    def calculate_equation_components(self, accounts: List[LedgerAccount], balances: Dict[str, int]):
+        """Calculate the components of the accounting equation."""
+        assets = Decimal(0)
+        liabilities = Decimal(0)
+        income = Decimal(0)
+        expenses = Decimal(0)
+        
+        for account in accounts:
+            balance = Decimal(balances.get(account.id, 0)) / SCALE
+            account_type = account.account_type
+            
+            if account_type == AccountType.ASSET:
+                assets += balance
+            elif account_type == AccountType.LIABILITY:
+                liabilities += -balance  # Liabilities have credit balance (negative in our system)
+            elif account_type == AccountType.INCOME:
+                income += -balance  # Income has credit balance (negative in our system)
+            elif account_type == AccountType.EXPENSE:
+                expenses += balance
+        
+        equity = income - expenses
+        return assets, liabilities, equity
+
+    def display_general_ledger(self, transactions: List[Dict[str, Any]]):
+        """Display the complete general ledger with all journal entries."""
+        print("GENERAL LEDGER - ALL JOURNAL ENTRIES")
+        
+        all_entries = []
+        
+        # Collect all journal entries from all transactions
+        for tx_info in transactions:
+            tx = tx_info["ledger_tx"]
+            if tx.entries:
+                for entry in tx.entries:
+                    all_entries.append({
+                        'transaction_name': tx_info["name"],
+                        'transaction_type': tx.transaction_type.value,
+                        'transaction_id': entry.transaction_id or "N/A",
+                        'entry_id': entry.id,
+                        'account_id': entry.account_id,
+                        'description': entry.description or "",
+                        'debit': entry.debit if entry.debit and entry.debit > 0 else 0,
+                        'credit': entry.credit if entry.credit and entry.credit > 0 else 0,
+                        'timestamp': entry.ts_created,
+                        'user_id': tx_info["user_id"]
+                    })
+        
+        # Sort by timestamp if available, otherwise by transaction name
+        all_entries.sort(key=lambda x: x['timestamp'] if x['timestamp'] else x['transaction_name'])
+        
+        # Prepare data for tabular display
+        ledger_data = []
+        running_balance = Decimal(0)
+        
+        for entry in all_entries:
+            debit_amount = Decimal(entry['debit']) / SCALE if entry['debit'] else Decimal(0)
+            credit_amount = Decimal(entry['credit']) / SCALE if entry['credit'] else Decimal(0)
+            
+            # Calculate running balance (debits positive, credits negative)
+            running_balance += debit_amount - credit_amount
+            
+            ledger_data.append([
+                entry['transaction_name'][:20],
+                entry['transaction_type'],
+                entry['account_id'],
+                entry['description'][:30],
+                fmt_decimal(debit_amount) if debit_amount > 0 else "-",
+                fmt_decimal(credit_amount) if credit_amount > 0 else "-",
+                fmt_decimal(running_balance),
+                entry['user_id']
+            ])
+        
+        headers = [
+            'Transaction', 'Type', 'Account ID', 'Description', 
+            'Debit', 'Credit', 'Running Total', 'User ID'
+        ]
+        
+        print(f"{tabulate(ledger_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'left', 'left', 'right', 'right', 'right', 'center'])}")
+
+    def display_transaction_register(self, transactions: List[Dict[str, Any]]):
+        """Display a transaction register showing each complete transaction."""
+        print("TRANSACTION REGISTER - COMPLETE TRANSACTIONS")
+        
+        for i, tx_info in enumerate(transactions, 1):
+            tx = tx_info["ledger_tx"]
+            
+            print(f"TRANSACTION #{i}: {tx_info['name'].upper()} - {tx.transaction_type.value}")
+            print(f"User ID: {tx_info['user_id']} | Description: {tx_info['description']}")
+            
+            if tx.entries:
+                
+                entry_data = []
+                transaction_debits = Decimal(0)
+                transaction_credits = Decimal(0)
+                
+                for entry in tx.entries:
+                    debit_amount = Decimal(entry.debit) / SCALE if entry.debit and entry.debit > 0 else Decimal(0)
+                    credit_amount = Decimal(entry.credit) / SCALE if entry.credit and entry.credit > 0 else Decimal(0)
+                    
+                    transaction_debits += debit_amount
+                    transaction_credits += credit_amount
+                    
+                    entry_data.append([
+                        entry.account_id,
+                        entry.description or "",
+                        fmt_decimal(debit_amount) if debit_amount > 0 else "-",
+                        fmt_decimal(credit_amount) if credit_amount > 0 else "-"
+                    ])
+                
+                # Add totals row
+                entry_data.append([
+                    "TOTALS",
+                    "",
+                    fmt_decimal(transaction_debits),
+                    fmt_decimal(transaction_credits)
+                ])
+                
+                headers = ['Account ID', 'Description', 'Debit', 'Credit']
+                print(f"{tabulate(entry_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'right', 'right'])}")
+            
+            if tx.transfers:
+                
+                transfer_data = []
+                for transfer in tx.transfers:
+                    amount = Decimal(transfer.amount) / SCALE
+                    transfer_data.append([
+                        transfer.debit_account_id,
+                        transfer.credit_account_id,
+                        fmt_decimal(amount),
+                        transfer.id[:8] + "..."
+                    ])
+                
+                headers = ['Debit Account', 'Credit Account', 'Amount', 'Transfer ID']
+                print(f"{tabulate(transfer_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'right', 'left'])}")
+            
+            print()  # Empty line after each transaction
+
+    def display_trial_balance(self, accounts: List[LedgerAccount], final_balances: Dict[str, int]):
+        """Display a trial balance showing all account balances."""
+        print("TRIAL BALANCE")
+        
+        trial_balance_data = []
+        total_debits = Decimal(0)
+        total_credits = Decimal(0)
+        
+        # Group accounts by type for better organization
+        accounts_by_type = {}
+        for account in accounts:
+            account_type = account.account_type.value.title()
+            if account_type not in accounts_by_type:
+                accounts_by_type[account_type] = []
+            accounts_by_type[account_type].append(account)
+        
+        # Process each account type
+        for account_type in sorted(accounts_by_type.keys()):
+            # Add section header
+            trial_balance_data.append([
+                f"--- {account_type.upper()} ACCOUNTS ---",
+                "",
+                "",
+                "",
+                ""
+            ])
+            
+            type_debits = Decimal(0)
+            type_credits = Decimal(0)
+            
+            for account in accounts_by_type[account_type]:
+                balance = final_balances.get(account.id, 0)
+                balance_dollars = Decimal(balance) / SCALE
+                
+                # Determine if balance should be shown as debit or credit
+                if balance_dollars == 0:
+                    debit_str = "-"
+                    credit_str = "-"
+                elif (account.side == LedgerSide.DEBIT and balance_dollars > 0) or \
+                     (account.side == LedgerSide.CREDIT and balance_dollars < 0):
+                    # Normal balance
+                    debit_str = fmt_decimal(abs(balance_dollars))
+                    credit_str = "-"
+                    type_debits += abs(balance_dollars)
+                    total_debits += abs(balance_dollars)
+                else:
+                    # Contra balance
+                    debit_str = "-"
+                    credit_str = fmt_decimal(abs(balance_dollars))
+                    type_credits += abs(balance_dollars)
+                    total_credits += abs(balance_dollars)
+                
+                trial_balance_data.append([
+                    account.id,
+                    account.name,
+                    account.side.value.title(),
+                    debit_str,
+                    credit_str
+                ])
+            
+            # Add subtotal for account type
+            trial_balance_data.append([
+                f"Subtotal {account_type}",
+                "",
+                "",
+                fmt_decimal(type_debits) if type_debits > 0 else "-",
+                fmt_decimal(type_credits) if type_credits > 0 else "-"
+            ])
+            
+            # Add spacing
+            trial_balance_data.append(["", "", "", "", ""])
+        
+        # Add final totals
+        trial_balance_data.append([
+            "GRAND TOTALS",
+            "",
+            "",
+            fmt_decimal(total_debits),
+            fmt_decimal(total_credits)
+        ])
+        
+        headers = ['Account ID', 'Account Name', 'Normal Side', 'Debit Balance', 'Credit Balance']
+        print(f"{tabulate(trial_balance_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'center', 'right', 'right'])}")
 
 
 if __name__ == "__main__":
-    pytest.main([__file__]) 
+    pytest.main([__file__])
