@@ -35,14 +35,15 @@ from ledger.ledger_api import (
     LedgerQuery,
     AccountType,
     LedgerSide,
-    TransactionType
+    TransactionType,
+    generate_account_code,
 )
 
 from ledger.sql_ledger import SQLLedgerAPI
 from ledger.ledger_tx_builder import LedgerTransactionBuilder
 
 # Decimal precision for monetary calculations
-DECIMALS = 6
+DECIMALS = 10
 SCALE = Decimal(10) ** DECIMALS
 
 def fmt_decimal(val):
@@ -104,9 +105,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="cash",
                 name="Cash/Bank Account",
+                account_code=generate_account_code("Cash/Bank Account", 100),
                 account_type=AccountType.ASSET,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -116,9 +118,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="ar_processor",
                 name="Accounts Receivable (Processor)",
+                account_code=generate_account_code("Accounts Receivable (Processor)", 100),
                 account_type=AccountType.ASSET,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -130,9 +133,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="unearned_revenue",
                 name="Unearned Revenue",
+                account_code=generate_account_code("Unearned Revenue", 200),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
-                owner_id=200,
+                workspace_id=200,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -142,9 +146,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="tax_payable",
                 name="Tax Payable",
+                account_code=generate_account_code("Tax Payable", 100),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -154,9 +159,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="promo_liability",
                 name="Promo Credit Liability",
+                account_code=generate_account_code("Promo Credit Liability", 200),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
-                owner_id=200,
+                workspace_id=200,
                 is_promo=True,
                 decimals=DECIMALS,
                 currency="USD",
@@ -168,9 +174,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="revenue_product_a",
                 name="Revenue – Product A",
+                account_code=generate_account_code("Revenue – Product A", 100),
                 account_type=AccountType.INCOME,
                 side=LedgerSide.CREDIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -180,9 +187,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="promo_revenue_product_a",
                 name="Promo Revenue – Product A",
+                account_code=generate_account_code("Promo Revenue – Product A", 100),
                 account_type=AccountType.INCOME,
                 side=LedgerSide.CREDIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=True,
                 decimals=DECIMALS,
                 currency="USD",
@@ -194,9 +202,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="service_fees_expense",
                 name="Service Fees Expense",
+                account_code=generate_account_code("Service Fees Expense", 100),
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -206,9 +215,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id="promo_expense",
                 name="Promo Credit Expense",
+                account_code=generate_account_code("Promo Credit Expense", 100),
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=True,
                 decimals=DECIMALS,
                 currency="USD",
@@ -228,14 +238,15 @@ class TestComprehensiveLedgerAPI:
             chart_data.append([
                 account.id,
                 account.name,
+                account.account_code,
                 account.account_type.value.title(),
                 account.side.value.title(),
-                account.owner_id,
+                account.workspace_id,
                 "Yes" if account.is_promo else "No",
                 account.details.get("entity", "N/A")
             ])
         
-        headers = ['Account ID', 'Account Name', 'Type', 'Normal Side', 'Owner ID', 'Promotional', 'Entity']
+        headers = ['Account ID', 'Account Name', 'Account Code', 'Type', 'Normal Side', 'Workspace ID', 'Promotional', 'Entity']
         print(f"\n{tabulate(chart_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'left', 'center', 'center', 'center', 'left'])}")
 
     def display_account_balances(self, accounts: List[LedgerAccount], balances: Dict[str, int]):
@@ -283,7 +294,7 @@ class TestComprehensiveLedgerAPI:
                     account.name,
                     balance_str,
                     balance_type,
-                    account.owner_id
+                    account.workspace_id
                 ])
                 type_total += balance
             
@@ -301,7 +312,7 @@ class TestComprehensiveLedgerAPI:
                 ""
             ])
             
-            headers = ['Account ID', 'Account Name', 'Balance', 'Type', 'Owner ID']
+            headers = ['Account ID', 'Account Name', 'Balance', 'Type', 'Workspace ID']
             print(f"\n{tabulate(balance_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'right', 'center', 'center'])}")
 
     def display_transaction_summary(self, transactions: List[Dict[str, Any]]):
@@ -984,7 +995,7 @@ class TestComprehensiveLedgerAPI:
                 
             print(f"\n{'═' * 120}")
             print(f"ACCOUNT LEDGER: {account.name.upper()} ({account.id})")
-            print(f"Account Type: {account.account_type.value.title()} | Normal Side: {account.side.value.title()} | Owner: {account.owner_id}")
+            print(f"Account Type: {account.account_type.value.title()} | Normal Side: {account.side.value.title()} | Workspace: {account.workspace_id}")
             print(f"{'═' * 120}")
             
             ledger_data = []

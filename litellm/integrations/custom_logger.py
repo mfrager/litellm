@@ -13,6 +13,7 @@ from typing import (
     Union,
 )
 
+from fastapi import Request
 from pydantic import BaseModel
 
 from litellm.caching.caching import DualCache
@@ -226,6 +227,7 @@ class CustomLogger:  # https://docs.litellm.ai/docs/observability/custom_callbac
             "pass_through_endpoint",
             "rerank",
         ],
+        request: Optional[Request],
     ) -> Optional[
         Union[Exception, str, dict]
     ]:  # raise exception if invalid, return a str for the user to receive - if rejected, or return a modified dictionary for passing into litellm

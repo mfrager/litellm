@@ -8,7 +8,6 @@ import sys
 import string
 import secrets
 import asyncio
-import sqlite3
 from ulid import ULID
 from datetime import datetime
 from dotenv import load_dotenv
@@ -61,15 +60,15 @@ class RouterAuth:
         
         return user, workspace
     
-    def create_token(self, user_id: str) -> Token:
-        """Create a new token instance for a user."""
+    def create_token(self, workspace_id: str) -> Token:
+        """Create a new token instance for a workspace."""
         
         alphabet = string.ascii_letters  # A-Za-z
         token = ''.join(secrets.choice(alphabet) for _ in range(64))
         
         token_obj = Token(
             id=str(ULID()),
-            user_id=user_id,
+            workspace_id=workspace_id,
             token=token
         )
         
@@ -80,9 +79,18 @@ class RouterAuth:
         return token_obj
 
 def setup_database():
-    """Set up SQLite database and return session."""
-    # Create in-memory SQLite database
-    engine = create_engine('sqlite:///:memory:', echo=False)
+    """Set up MySQL database and return session."""
+    # Get MySQL database URL from environment
+    database_url = os.environ['DATABASE_ASYNC_TEST']
+    
+    # Convert async URL to sync URL for SQLAlchemy session
+    sync_url = database_url.replace('mysql+aiomysql://', 'mysql+pymysql://')
+    
+    # Create MySQL database engine
+    engine = create_engine(sync_url, echo=False)
+    
+    # Drop all tables first to ensure clean schema
+    Base.metadata.drop_all(engine)
     
     # Create all tables
     Base.metadata.create_all(engine)
@@ -98,14 +106,19 @@ def test_create_user(session):
     print("🧪 Testing RouterAuth.create_user()...")
     
     auth = RouterAuth(session)
+    
+    # Use unique email with timestamp to avoid duplicates
+    import time
+    unique_email = f"test+{int(time.time())}@example.com"
+    
     user, workspace = auth.create_user(
-        email="test@example.com",
+        email=unique_email,
         first_name="Test",
         last_name="User"
     )
     
     # Verify user creation
-    assert user.email == "test@example.com"
+    assert user.email == unique_email
     assert user.first_name == "Test"
     assert user.last_name == "User"
     assert user.workspace_id == workspace.id
@@ -121,7 +134,7 @@ def test_create_user(session):
     
     assert db_user is not None
     assert db_workspace is not None
-    assert db_user.email == "test@example.com"
+    assert db_user.email == unique_email
     assert db_workspace.owner_id == user.id
     
     print("✅ User and workspace created successfully")
@@ -136,12 +149,17 @@ def test_create_token(session):
     print("\n🧪 Testing RouterAuth.create_token()...")
     
     auth = RouterAuth(session)
-    user, workspace = auth.create_user(email="token@example.com")
     
-    token = auth.create_token(user_id=user.id)
+    # Use unique email with timestamp to avoid duplicates
+    import time
+    unique_email = f"token+{int(time.time())}@example.com"
+    
+    user, workspace = auth.create_user(email=unique_email)
+    
+    token = auth.create_token(workspace_id=workspace.id)
     
     # Verify token creation
-    assert token.user_id == user.id
+    assert token.workspace_id == workspace.id
     assert len(token.token) == 64  # Exactly 64 characters
     assert token.token.isalpha()  # Only A-Za-z characters
     assert len(token.id) == 26  # ULID length
@@ -150,12 +168,12 @@ def test_create_token(session):
     db_token = session.query(Token).filter_by(id=token.id).first()
     assert db_token is not None
     assert db_token.token == token.token
-    assert db_token.user_id == user.id
+    assert db_token.workspace_id == workspace.id
     
     print("✅ Token created successfully")
     print(f"   Token ID: {token.id}")
     print(f"   Token: {token.token[:20]}...{token.token[-20:]}")  # Show first/last 20 chars
-    print(f"   User ID: {token.user_id}")
+    print(f"   Workspace ID: {token.workspace_id}")
     
     return token
 
@@ -181,14 +199,14 @@ def test_database_queries(session):
 
 def main():
     """Run all tests."""
-    print("🚀 RouterAuth Test Suite with SQLite Database")
+    print("🚀 RouterAuth Test Suite with MySQL Database")
     print("=" * 50)
     
     session = None
     try:
         # Set up database
         session = setup_database()
-        print("📊 Database initialized (SQLite in-memory)")
+        print("📊 Database initialized (MySQL)")
         
         # Test user creation
         user, workspace = test_create_user(session)

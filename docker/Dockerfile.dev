@@ -35,9 +35,9 @@ RUN pip uninstall jwt -y || true && \
 
 # Copy only necessary files for build
 COPY pyproject.toml README.md schema.prisma poetry.lock ./
-COPY litellm/ ./litellm/
 COPY enterprise/ ./enterprise/
 COPY docker/ ./docker/
+COPY litellm/ ./litellm/
 
 # Build Admin UI once
 RUN chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
@@ -81,8 +81,9 @@ RUN prisma generate && \
 
 # Copy config
 
-COPY litellm_config.yaml config.yaml
-COPY custom_callbacks.py custom_callbacks.py
+COPY litellm_config.yaml  config.yaml
+COPY custom_auth.py       custom_auth.py
+COPY custom_callbacks.py  custom_callbacks.py
 
 # DojoRouter code
 COPY dojo/ ./dojo/

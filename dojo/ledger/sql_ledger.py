@@ -108,9 +108,10 @@ class SQLLedgerAPI(LedgerAPI):
         sql_account = SQLAccount(
           id=account_id,
           name=account.name,
+          account_code=account.account_code,
           account_type=account.account_type.value,
           side=account.side.value,
-          owner_id=account.owner_id,
+          workspace_id=account.workspace_id,
           is_promo=account.is_promo,
           decimals=account.decimals,
           currency=account.currency,
@@ -339,11 +340,14 @@ class SQLLedgerAPI(LedgerAPI):
       account_id = str(query['account_id'])
       q = q.filter(SQLAccount.id == account_id)
     
-    if query.get('owner_id'):
-      q = q.filter(SQLAccount.owner_id == query['owner_id'])
+    if query.get('workspace_id'):
+      q = q.filter(SQLAccount.workspace_id == query['workspace_id'])
     
     if query.get('name'):
       q = q.filter(SQLAccount.name == query['name'])
+    
+    if query.get('account_code'):
+      q = q.filter(SQLAccount.account_code == query['account_code'])
     
     if query.get('limit'):
       q = q.limit(query['limit'])
@@ -474,9 +478,10 @@ class SQLLedgerAPI(LedgerAPI):
     return LedgerAccount(
       id=sql_account.id,
       name=sql_account.name,
+      account_code=sql_account.account_code,
       account_type=AccountType(sql_account.account_type),
       side=LedgerSide(sql_account.side),
-      owner_id=sql_account.owner_id,
+      workspace_id=sql_account.workspace_id,
       is_promo=sql_account.is_promo,
       decimals=sql_account.decimals,
       currency=sql_account.currency,

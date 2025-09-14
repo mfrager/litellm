@@ -1,4 +1,5 @@
-from fastapi import HTTPException
+from typing import Optional
+from fastapi import HTTPException, Request
 
 from litellm import verbose_logger
 from litellm._logging import verbose_proxy_logger
@@ -18,6 +19,7 @@ class _PROXY_MaxBudgetLimiter(CustomLogger):
         cache: DualCache,
         data: dict,
         call_type: str,
+        request: Optional[Request],
     ):
         try:
             verbose_proxy_logger.debug("Inside Max Budget Limiter Pre-Call Hook")

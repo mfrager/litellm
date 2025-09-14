@@ -30,6 +30,7 @@ from ledger.ledger_api import (
     LedgerAccountTransfer,
     LedgerTransaction,
     LedgerAccountTransaction,
+    generate_account_code,
     LedgerTransferTransaction,
     LedgerJournalTransaction,
     LedgerLogicalTransaction,
@@ -44,12 +45,12 @@ from ledger.sql_ledger import SQLLedgerAPI
 from ledger.ledger_tx_builder import LedgerTransactionBuilder
 
 # Decimal precision for monetary calculations
-DECIMALS = 6
+DECIMALS = 10
 SCALE = Decimal(10) ** DECIMALS
 
 def fmt_decimal(val):
-    """Format decimal values for display."""
-    return f"${Decimal(val).quantize(Decimal('0.000001')):,.6f}"
+    """Format decimal values for display with full 10 decimal precision."""
+    return f"${Decimal(val).quantize(Decimal('0.0000000001')):,.10f}"
 
 def generate_session_account_mapping():
     """Generate fresh ULID mapping for each test session."""
@@ -147,9 +148,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["cash"],
                 name="Cash/Bank Account",
+                account_code=generate_account_code("Cash/Bank Account", 100),
                 account_type=AccountType.ASSET,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -159,9 +161,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["ar_processor"],
                 name="Accounts Receivable (Processor)",
+                account_code=generate_account_code("Accounts Receivable (Processor)", 100),
                 account_type=AccountType.ASSET,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -173,9 +176,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["unearned_revenue"],
                 name="Unearned Revenue",
+                account_code=generate_account_code("Unearned Revenue", 200),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
-                owner_id=200,
+                workspace_id=200,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -185,9 +189,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["tax_payable"],
                 name="Tax Payable",
+                account_code=generate_account_code("Tax Payable", 100),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -197,9 +202,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["promo_liability"],
                 name="Promo Credit Liability",
+                account_code=generate_account_code("Promo Credit Liability", 200),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
-                owner_id=200,
+                workspace_id=200,
                 is_promo=True,
                 decimals=DECIMALS,
                 currency="USD",
@@ -211,9 +217,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["revenue_product_a"],
                 name="Revenue – Product A",
+                account_code=generate_account_code("Revenue – Product A", 100),
                 account_type=AccountType.INCOME,
                 side=LedgerSide.CREDIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -223,9 +230,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["promo_revenue_product_a"],
                 name="Promo Revenue – Product A",
+                account_code=generate_account_code("Promo Revenue – Product A", 100),
                 account_type=AccountType.INCOME,
                 side=LedgerSide.CREDIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=True,
                 decimals=DECIMALS,
                 currency="USD",
@@ -237,9 +245,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["service_fees_expense"],
                 name="Service Fees Expense",
+                account_code=generate_account_code("Service Fees Expense", 100),
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
@@ -249,9 +258,10 @@ class TestComprehensiveLedgerAPI:
             LedgerAccount(
                 id=account_mapping["promo_expense"],
                 name="Promo Credit Expense",
+                account_code=generate_account_code("Promo Credit Expense", 100),
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
-                owner_id=100,
+                workspace_id=100,
                 is_promo=True,
                 decimals=DECIMALS,
                 currency="USD",
@@ -271,14 +281,15 @@ class TestComprehensiveLedgerAPI:
             chart_data.append([
                 account.id,
                 account.name,
+                account.account_code,
                 account.account_type.value.title(),
                 account.side.value.title(),
-                account.owner_id,
+                account.workspace_id,
                 "Yes" if account.is_promo else "No",
                 account.details.get("entity", "N/A")
             ])
         
-        headers = ['Account ID', 'Account Name', 'Type', 'Normal Side', 'Owner ID', 'Promotional', 'Entity']
+        headers = ['Account ID', 'Account Name', 'Account Code', 'Type', 'Normal Side', 'Workspace ID', 'Promotional', 'Entity']
         print(f"\n{tabulate(chart_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'left', 'center', 'center', 'center', 'left'])}")
 
     def display_account_balances(self, accounts: List[LedgerAccount], balances: Dict[str, int]):
@@ -326,7 +337,7 @@ class TestComprehensiveLedgerAPI:
                     account.name,
                     balance_str,
                     balance_type,
-                    account.owner_id
+                    account.workspace_id
                 ])
                 type_total += balance
             
@@ -344,7 +355,7 @@ class TestComprehensiveLedgerAPI:
                 ""
             ])
             
-            headers = ['Account ID', 'Account Name', 'Balance', 'Type', 'Owner ID']
+            headers = ['Account ID', 'Account Name', 'Balance', 'Type', 'Workspace ID']
             print(f"\n{tabulate(balance_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'right', 'center', 'center'])}")
 
     def display_transaction_summary(self, transactions: List[Dict[str, Any]]):
@@ -434,7 +445,7 @@ class TestComprehensiveLedgerAPI:
         
         print(f"\nAccounting Equation: Assets = Liabilities + Equity")
         print(f"{fmt_decimal(assets_dollars)} = {fmt_decimal(liabilities_dollars)} + {fmt_decimal(net_equity_dollars)}")
-
+    
     @pytest.mark.asyncio
     async def test_comprehensive_transaction_workflow(self, sql_ledger_api, tx_builder, comprehensive_accounts):
         """Test comprehensive workflow with all transaction types from ledger_tx_builder.py."""
@@ -463,9 +474,10 @@ class TestComprehensiveLedgerAPI:
                         reused_account = LedgerAccount(
                             id=existing_account.id,
                             name=account.name,
+                            account_code=existing_account.account_code,  # Use existing account_code
                             account_type=account.account_type,
                             side=account.side,
-                            owner_id=account.owner_id,
+                            workspace_id=account.workspace_id,
                             is_promo=account.is_promo,
                             decimals=account.decimals,
                             currency=account.currency,
@@ -482,8 +494,11 @@ class TestComprehensiveLedgerAPI:
                     accounts_to_create.append(account)
                     final_accounts.append(account)
                 finally:
-                    await sql_ledger_api.end_transaction()
-            
+                    try:
+                        await sql_ledger_api.end_transaction()
+                    except RuntimeError:
+                        pass  # Transaction already ended
+        
             # Create only the accounts that don't exist
             if accounts_to_create:
                 await sql_ledger_api.begin_transaction()
@@ -530,7 +545,7 @@ class TestComprehensiveLedgerAPI:
             for account in comprehensive_accounts:
                 initial_balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
             await sql_ledger_api.end_transaction()
-            
+        
             print("\n💰 Initial account balances:")
             self.display_account_balances(comprehensive_accounts, initial_balances)
             
@@ -547,7 +562,7 @@ class TestComprehensiveLedgerAPI:
                 await sql_ledger_api.begin_transaction()
                 await sql_ledger_api.create_transactions([logical_tx])
                 await sql_ledger_api.end_transaction()
-            
+        
             print("   ✅ All transactions executed successfully")
             
             # Display transaction summary
@@ -559,7 +574,7 @@ class TestComprehensiveLedgerAPI:
             for account in comprehensive_accounts:
                 final_balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
             await sql_ledger_api.end_transaction()
-            
+        
             # Display final balances
             print("\n💰 Final account balances after all transactions:")
             self.display_account_balances(comprehensive_accounts, final_balances)
@@ -579,6 +594,9 @@ class TestComprehensiveLedgerAPI:
             
             print("\n✅ Comprehensive transaction workflow test completed successfully!")
             
+        except Exception as e:
+            print(f"❌ Error in comprehensive transaction workflow test: {e}")
+            raise
         finally:
             # Clean up database connections
             await sql_ledger_api.close()
@@ -786,7 +804,7 @@ class TestComprehensiveLedgerAPI:
         if promo_id:
             promo_balance = final_balances[promo_id] / SCALE
             print(f"   • Promo liability balance: {fmt_decimal(promo_balance)} (should be negative for credit balance)")
-
+    
     @pytest.mark.asyncio
     async def test_individual_transaction_types(self, sql_ledger_api, tx_builder, comprehensive_accounts):
         """Test each transaction type individually to verify proper accounting."""
@@ -812,9 +830,10 @@ class TestComprehensiveLedgerAPI:
                         reused_account = LedgerAccount(
                             id=existing_account.id,
                             name=account.name,
+                            account_code=existing_account.account_code,  # Use existing account_code
                             account_type=account.account_type,
                             side=account.side,
-                            owner_id=account.owner_id,
+                            workspace_id=account.workspace_id,
                             is_promo=account.is_promo,
                             decimals=account.decimals,
                             currency=account.currency,
@@ -831,8 +850,11 @@ class TestComprehensiveLedgerAPI:
                     accounts_to_create.append(account)
                     final_accounts.append(account)
                 finally:
-                    await sql_ledger_api.end_transaction()
-            
+                    try:
+                        await sql_ledger_api.end_transaction()
+                    except RuntimeError:
+                        pass  # Transaction already ended
+        
             # Create only the accounts that don't exist
             if accounts_to_create:
                 await sql_ledger_api.begin_transaction()
@@ -893,22 +915,22 @@ class TestComprehensiveLedgerAPI:
                 for account in comprehensive_accounts:
                     balances_before[account.id] = await sql_ledger_api.get_account_balance(account.id)
                 await sql_ledger_api.end_transaction()
-                
+        
                 # Execute transaction
                 tx = await tx_builder_func()
                 logical_tx = LedgerLogicalTransaction(transactions=[tx])
-                
+        
                 await sql_ledger_api.begin_transaction()
                 await sql_ledger_api.create_transactions([logical_tx])
                 await sql_ledger_api.end_transaction()
-                
+        
                 # Get balances after
                 await sql_ledger_api.begin_transaction()
                 balances_after = {}
                 for account in comprehensive_accounts:
                     balances_after[account.id] = await sql_ledger_api.get_account_balance(account.id)
                 await sql_ledger_api.end_transaction()
-                
+        
                 # Calculate total impact
                 total_impact = sum(abs(balances_after[acc.id] - balances_before[acc.id]) for acc in comprehensive_accounts)
                 accounts_affected = sum(1 for acc in comprehensive_accounts if balances_after[acc.id] != balances_before[acc.id])
@@ -961,9 +983,10 @@ class TestComprehensiveLedgerAPI:
                         reused_account = LedgerAccount(
                             id=existing_account.id,
                             name=account.name,
+                            account_code=existing_account.account_code,  # Use existing account_code
                             account_type=account.account_type,
                             side=account.side,
-                            owner_id=account.owner_id,
+                            workspace_id=account.workspace_id,
                             is_promo=account.is_promo,
                             decimals=account.decimals,
                             currency=account.currency,
@@ -980,8 +1003,11 @@ class TestComprehensiveLedgerAPI:
                     accounts_to_create.append(account)
                     final_accounts.append(account)
                 finally:
-                    await sql_ledger_api.end_transaction()
-            
+                    try:
+                        await sql_ledger_api.end_transaction()
+                    except RuntimeError:
+                        pass  # Transaction already ended
+        
             # Create only the accounts that don't exist
             if accounts_to_create:
                 await sql_ledger_api.begin_transaction()
@@ -1029,7 +1055,7 @@ class TestComprehensiveLedgerAPI:
             for account in comprehensive_accounts:
                 balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
             await sql_ledger_api.end_transaction()
-            
+        
             is_balanced = self.check_accounting_equation(comprehensive_accounts, balances)
             equation_checks.append(["Initial State", "0", "✓" if is_balanced else "✗"])
             
@@ -1039,14 +1065,14 @@ class TestComprehensiveLedgerAPI:
                 await sql_ledger_api.begin_transaction()
                 await sql_ledger_api.create_transactions([logical_tx])
                 await sql_ledger_api.end_transaction()
-                
+        
                 # Check equation
                 await sql_ledger_api.begin_transaction()
                 balances = {}
                 for account in comprehensive_accounts:
                     balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
                 await sql_ledger_api.end_transaction()
-                
+        
                 is_balanced = self.check_accounting_equation(comprehensive_accounts, balances)
                 equation_checks.append([
                     tx_info["name"][:30],
@@ -1299,6 +1325,364 @@ class TestComprehensiveLedgerAPI:
         headers = ['Account ID', 'Account Name', 'Normal Side', 'Debit Balance', 'Credit Balance']
         print(f"{tabulate(trial_balance_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'center', 'right', 'right'])}")
 
+    @pytest.mark.asyncio
+    async def test_decimal_precision_calculations(self, sql_ledger_api, account_mapping):
+        """Test that the ledger can handle calculations with full 10 decimal precision."""
+        print("\n🔢 DECIMAL PRECISION TEST - 10 DECIMAL PLACES (MySQL)")
+        print("=" * 100)
+        
+        try:
+            # Create precision test accounts
+            precision_accounts = [
+                LedgerAccount(
+                    id=account_mapping["cash"],
+                    name="Precision Cash Account",
+                    account_code="internal_precision_cash_account",
+                    account_type=AccountType.ASSET,
+                    side=LedgerSide.DEBIT,
+                    workspace_id=100,
+                    is_promo=False,
+                    decimals=DECIMALS,  # 10 decimal places
+                    currency="USD",
+                    details={"entity": "Company", "test": "precision"},
+                    history=True
+                ),
+                LedgerAccount(
+                    id=account_mapping["revenue_product_a"],
+                    name="Precision Revenue Account",
+                    account_code="internal_precision_revenue_account",
+                    account_type=AccountType.INCOME,
+                    side=LedgerSide.CREDIT,
+                    workspace_id=100,
+                    is_promo=False,
+                    decimals=DECIMALS,  # 10 decimal places
+                    currency="USD",
+                    details={"entity": "Company", "test": "precision"},
+                    history=True
+                ),
+                LedgerAccount(
+                    id=account_mapping["service_fees_expense"],
+                    name="Precision Expense Account",
+                    account_code="internal_precision_expense_account",
+                    account_type=AccountType.EXPENSE,
+                    side=LedgerSide.DEBIT,
+                    workspace_id=100,
+                    is_promo=False,
+                    decimals=DECIMALS,  # 10 decimal places
+                    currency="USD",
+                    details={"entity": "Company", "test": "precision"},
+                    history=True
+                ),
+            ]
+            
+            # Check for existing accounts and create only those that don't exist
+            print("\n📊 Checking for existing precision test accounts...")
+            final_accounts = []
+            accounts_to_create = []
+            
+            for account in precision_accounts:
+                await sql_ledger_api.begin_transaction()
+                try:
+                    query = {"name": account.name}
+                    existing_accounts = await sql_ledger_api.query_accounts(query)
+                    if existing_accounts:
+                        existing_account = existing_accounts[0]
+                        print(f"   Found existing account '{account.name}' with ID: {existing_account.id}")
+                        reused_account = LedgerAccount(
+                            id=existing_account.id,
+                            name=account.name,
+                            account_code=existing_account.account_code,
+                            account_type=existing_account.account_type,
+                            side=existing_account.side,
+                            workspace_id=existing_account.workspace_id,
+                            is_promo=existing_account.is_promo,
+                            decimals=existing_account.decimals,
+                            currency=existing_account.currency,
+                            details=existing_account.details,
+                            history=existing_account.history
+                        )
+                        final_accounts.append(reused_account)
+                    else:
+                        print(f"   No existing account found for '{account.name}', will create with ULID: {account.id}")
+                        accounts_to_create.append(account)
+                        final_accounts.append(account)
+                except Exception as e:
+                    print(f"   Error checking for account '{account.name}': {e}")
+                    accounts_to_create.append(account)
+                    final_accounts.append(account)
+                finally:
+                    await sql_ledger_api.end_transaction()
+            
+            # Create only the accounts that don't exist
+            if accounts_to_create:
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=accounts_to_create)])
+                await sql_ledger_api.end_transaction()
+                print(f"   ✅ Created {len(accounts_to_create)} new precision test accounts")
+            else:
+                print("   ✅ All precision test accounts already exist, no new accounts created")
+            
+            # Ensure we have exactly 3 accounts for the precision test
+            if len(final_accounts) < 3:
+                print(f"   ⚠️  Only found {len(final_accounts)} accounts, need 3 for precision test")
+                print("   🔧 Creating missing accounts...")
+                
+                # Create missing accounts with unique IDs
+                missing_accounts = []
+                for i in range(len(final_accounts), 3):
+                    if i == 0:  # Cash account
+                        missing_account = LedgerAccount(
+                            id=str(ULID()),
+                            name="Precision Cash Account",
+                            account_code=f"internal_precision_cash_account_{i}",
+                            account_type=AccountType.ASSET,
+                            side=LedgerSide.DEBIT,
+                            workspace_id=100,
+                            is_promo=False,
+                            decimals=DECIMALS,
+                            currency="USD",
+                            details={"entity": "Company", "test": "precision"},
+                            history=True
+                        )
+                    elif i == 1:  # Revenue account
+                        missing_account = LedgerAccount(
+                            id=str(ULID()),
+                            name="Precision Revenue Account",
+                            account_code=f"internal_precision_revenue_account_{i}",
+                            account_type=AccountType.INCOME,
+                            side=LedgerSide.CREDIT,
+                            workspace_id=100,
+                            is_promo=False,
+                            decimals=DECIMALS,
+                            currency="USD",
+                            details={"entity": "Company", "test": "precision"},
+                            history=True
+                        )
+                    else:  # Expense account
+                        missing_account = LedgerAccount(
+                            id=str(ULID()),
+                            name="Precision Expense Account",
+                            account_code=f"internal_precision_expense_account_{i}",
+                            account_type=AccountType.EXPENSE,
+                            side=LedgerSide.DEBIT,
+                            workspace_id=100,
+                            is_promo=False,
+                            decimals=DECIMALS,
+                            currency="USD",
+                            details={"entity": "Company", "test": "precision"},
+                            history=True
+                        )
+                    missing_accounts.append(missing_account)
+                    final_accounts.append(missing_account)
+                
+                # Create the missing accounts
+                await sql_ledger_api.begin_transaction()
+                await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=missing_accounts)])
+                await sql_ledger_api.end_transaction()
+                print(f"   ✅ Created {len(missing_accounts)} missing precision test accounts")
+            
+            # Use the final account list
+            precision_accounts = final_accounts
+            print(f"   📊 Final accounts count: {len(final_accounts)}")
+            for i, acc in enumerate(final_accounts):
+                print(f"      {i}: {acc.name} (ID: {acc.id})")
+            
+            # Get initial balances
+            await sql_ledger_api.begin_transaction()
+            initial_balances = {}
+            for account in precision_accounts:
+                initial_balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
+            await sql_ledger_api.end_transaction()
+            
+            print("\n💰 Initial balances:")
+            for account in precision_accounts:
+                balance = initial_balances[account.id]
+                balance_dollars = Decimal(balance) / SCALE
+                print(f"   {account.name}: {fmt_decimal(balance_dollars)}")
+            
+            # Test various precision scenarios
+            precision_tests = [
+                {
+                    "name": "Micro-payment Test",
+                    "description": "Test with very small amounts (0.0000000001)",
+                    "amount": Decimal("0.0000000001"),  # 1 micro-unit
+                    "expected_precision": 10
+                },
+                {
+                    "name": "Precision Addition Test", 
+                    "description": "Test adding multiple small amounts",
+                    "amount": Decimal("0.0000000001"),
+                    "expected_precision": 10,
+                    "iterations": 1000  # Add 1000 times
+                },
+                {
+                    "name": "Large Amount Precision Test",
+                    "description": "Test large amounts with full precision",
+                    "amount": Decimal("100000000.0000000000"),  # Large amount with 10 decimals (within BIGINT limits)
+                    "expected_precision": 10
+                },
+                {
+                    "name": "Fractional Precision Test",
+                    "description": "Test fractional amounts requiring full precision",
+                    "amount": Decimal("1.0000000001"),  # 1 + 1 micro-unit
+                    "expected_precision": 10
+                },
+                {
+                    "name": "Rounding Edge Case Test",
+                    "description": "Test amounts that might cause rounding issues",
+                    "amount": Decimal("0.0000000005"),  # Half micro-unit
+                    "expected_precision": 10
+                }
+            ]
+            
+            # Execute precision tests
+            test_results = []
+            total_transactions = 0
+            
+            for test_case in precision_tests:
+                print(f"\n🧪 Running: {test_case['name']}")
+                print(f"   Description: {test_case['description']}")
+                print(f"   Amount: {test_case['amount']}")
+                
+                # Create transaction builder for this test
+                account_ids = {
+                    "cash_bank": precision_accounts[0].id,  # Cash account
+                    "ar_processor": precision_accounts[0].id,  # Use cash account for AR too
+                    "unearned_revenue": precision_accounts[1].id,  # Use revenue account for unearned revenue
+                    "revenue_product_a": precision_accounts[1].id,  # Revenue account
+                    "service_fees_expense": precision_accounts[2].id,  # Expense account
+                }
+                tx_builder = LedgerTransactionBuilder(account_ids)
+                
+                # Get balances before transaction
+                await sql_ledger_api.begin_transaction()
+                balances_before = {}
+                for account in precision_accounts:
+                    balances_before[account.id] = await sql_ledger_api.get_account_balance(account.id)
+                await sql_ledger_api.end_transaction()
+                
+                # Execute test transaction(s)
+                if test_case.get("iterations"):
+                    # Multiple iterations test
+                    for i in range(test_case["iterations"]):
+                        tx = await tx_builder.payment(
+                            amount=float(test_case["amount"]),
+                            user_id=100,
+                            name=f"{test_case['name']} - Iteration {i+1}",
+                            description=f"{test_case['description']} - Iteration {i+1}"
+                        )
+                        logical_tx = LedgerLogicalTransaction(transactions=[tx])
+                        await sql_ledger_api.begin_transaction()
+                        await sql_ledger_api.create_transactions([logical_tx])
+                        await sql_ledger_api.end_transaction()
+                        total_transactions += 1
+                else:
+                    # Single transaction test
+                    tx = await tx_builder.payment(
+                        amount=float(test_case["amount"]),
+                        user_id=100,
+                        name=test_case["name"],
+                        description=test_case["description"]
+                    )
+                    logical_tx = LedgerLogicalTransaction(transactions=[tx])
+                    await sql_ledger_api.begin_transaction()
+                    await sql_ledger_api.create_transactions([logical_tx])
+                    await sql_ledger_api.end_transaction()
+                    total_transactions += 1
+                
+                # Get balances after transaction(s)
+                await sql_ledger_api.begin_transaction()
+                balances_after = {}
+                for account in precision_accounts:
+                    balances_after[account.id] = await sql_ledger_api.get_account_balance(account.id)
+                await sql_ledger_api.end_transaction()
+                
+                # Calculate precision verification
+                cash_account = precision_accounts[0]
+                cash_change = balances_after[cash_account.id] - balances_before[cash_account.id]
+                cash_change_dollars = Decimal(cash_change) / SCALE
+                
+                # Verify precision
+                expected_change = test_case["amount"]
+                if test_case.get("iterations"):
+                    expected_change = test_case["amount"] * test_case["iterations"]
+                
+                precision_error = abs(cash_change_dollars - expected_change)
+                precision_maintained = precision_error < Decimal("0.0000000001")  # Less than 1 micro-unit error
+                
+                # Count decimal places in the result
+                result_str = str(cash_change_dollars)
+                if '.' in result_str:
+                    decimal_places = len(result_str.split('.')[1])
+                else:
+                    decimal_places = 0
+                
+                test_results.append([
+                    test_case["name"],
+                    fmt_decimal(test_case["amount"]),
+                    fmt_decimal(expected_change),
+                    fmt_decimal(cash_change_dollars),
+                    fmt_decimal(precision_error),
+                    decimal_places,
+                    "✓" if precision_maintained else "✗"
+                ])
+                
+                print(f"   Expected change: {fmt_decimal(expected_change)}")
+                print(f"   Actual change: {fmt_decimal(cash_change_dollars)}")
+                print(f"   Precision error: {fmt_decimal(precision_error)}")
+                print(f"   Decimal places: {decimal_places}")
+                print(f"   Precision maintained: {'✓' if precision_maintained else '✗'}")
+            
+            # Display comprehensive results
+            print(f"\n{'=' * 100}")
+            print("DECIMAL PRECISION TEST RESULTS")
+            print(f"{'=' * 100}")
+            
+            headers = [
+                'Test Name', 'Amount', 'Expected Change', 'Actual Change', 
+                'Precision Error', 'Decimal Places', 'Precision OK'
+            ]
+            print(f"\n{tabulate(test_results, headers=headers, tablefmt='grid', colalign=['left', 'right', 'right', 'right', 'right', 'center', 'center'])}")
+            
+            # Final precision verification
+            print(f"\n📊 Final Account Balances:")
+            await sql_ledger_api.begin_transaction()
+            final_balances = {}
+            for account in precision_accounts:
+                final_balances[account.id] = await sql_ledger_api.get_account_balance(account.id)
+                balance_dollars = Decimal(final_balances[account.id]) / SCALE
+                print(f"   {account.name}: {fmt_decimal(balance_dollars)}")
+            await sql_ledger_api.end_transaction()
+            
+            # Verify accounting equation still holds
+            assets, liabilities, equity = self.calculate_equation_components(precision_accounts, final_balances)
+            equation_balanced = abs(assets - (liabilities + equity)) < Decimal('0.0000000001')
+            
+            print(f"\n⚖️  Accounting Equation Verification:")
+            print(f"   Assets: {fmt_decimal(assets)}")
+            print(f"   Liabilities: {fmt_decimal(liabilities)}")
+            print(f"   Equity: {fmt_decimal(equity)}")
+            print(f"   Equation balanced: {'✓' if equation_balanced else '✗'}")
+            
+            print(f"\n📈 Test Summary:")
+            print(f"   Total transactions executed: {total_transactions}")
+            print(f"   Tests passed: {sum(1 for result in test_results if result[-1] == '✓')}")
+            print(f"   Tests failed: {sum(1 for result in test_results if result[-1] == '✗')}")
+            print(f"   Accounting equation balanced: {'✓' if equation_balanced else '✗'}")
+            
+            # Assertions
+            assert all(result[-1] == '✓' for result in test_results), "Some precision tests failed"
+            assert equation_balanced, "Accounting equation is not balanced after precision tests"
+            
+            print(f"\n✅ All decimal precision tests passed! Ledger maintains full 10-decimal precision.")
+            
+        except Exception as e:
+            print(f"❌ Error in decimal precision test: {e}")
+            raise
+        finally:
+            # Clean up database connections
+            await sql_ledger_api.close()
+
 
 if __name__ == "__main__":
-    pytest.main([__file__])
+    pytest.main([__file__]) 

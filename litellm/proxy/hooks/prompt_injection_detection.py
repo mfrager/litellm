@@ -10,7 +10,7 @@
 from difflib import SequenceMatcher
 from typing import List, Literal, Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 import litellm
 from litellm._logging import verbose_proxy_logger
@@ -142,6 +142,7 @@ class _OPTIONAL_PromptInjectionDetection(CustomLogger):
         cache: DualCache,
         data: dict,
         call_type: str,  # "completion", "embeddings", "image_generation", "moderation"
+        request: Optional[Request],
     ):
         try:
             """

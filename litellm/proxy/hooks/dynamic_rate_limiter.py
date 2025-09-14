@@ -6,7 +6,7 @@ import asyncio
 import os
 from typing import List, Literal, Optional, Tuple, Union
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 import litellm
 from litellm import ModelResponse, Router
@@ -198,6 +198,7 @@ class _PROXY_DynamicRateLimitHandler(CustomLogger):
             "pass_through_endpoint",
             "rerank",
         ],
+        request: Optional[Request],
     ) -> Optional[
         Union[Exception, str, dict]
     ]:  # raise exception if invalid, return a str for the user to receive - if rejected, or return a modified dictionary for passing into litellm

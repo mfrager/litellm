@@ -301,7 +301,7 @@ class ProxyBaseLLMRequestProcessing:
         )
         ### CALL HOOKS ### - modify/reject incoming data before calling the model
         self.data = await proxy_logging_obj.pre_call_hook(  # type: ignore
-            user_api_key_dict=user_api_key_dict, data=self.data, call_type=route_type  # type: ignore
+            user_api_key_dict=user_api_key_dict, data=self.data, call_type=route_type, request=request  # type: ignore
         )
 
         ## LOGGING OBJECT ## - initialize logging object for logging success/failure events for call

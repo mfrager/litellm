@@ -39,7 +39,9 @@ class Token(CommonBase, Base):
     
     id = Column(String(26), primary_key=True, default=generate_ulid)
     token = Column(String(64), nullable=False, unique=True)           # The actual token
-    user_id = Column(String(26), nullable=False)                      # ULID for user reference
+    workspace_id = Column(String(26), nullable=False)                 # ULID for workspace reference
     is_active = Column(Boolean, nullable=False, default=True)         # Active flag
     last_access = Column(DateTime, nullable=True)                     # Last use of API token
+
+    workspace = relationship("Workspace", foreign_keys=[workspace_id], primaryjoin="Token.workspace_id == Workspace.id")
 

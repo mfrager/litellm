@@ -19,7 +19,7 @@ from .ledger_api import (
 __all__ = ["LedgerTransactionBuilder"]
 
 # Helper for scaling decimals
-DECIMALS = 6
+DECIMALS = 10
 SCALE = Decimal(10) ** DECIMALS
 
 def to_micro_units(amount: Union[int, float, str, Decimal]) -> int:

@@ -23,11 +23,12 @@ class SQLAccount(CommonBase, Base):
   
   id = Column(String(26), primary_key=True, default=generate_ulid)
   name = Column(String(255), nullable=False)
+  account_code = Column(String(255), nullable=False, unique=True)  # Unique account code
   account_type = Column(String(32), nullable=False)     # AccountType enum
   side = Column(String(16), nullable=False)             # LedgerSide enum
-  owner_id = Column(String(26), nullable=True)
+  workspace_id = Column(String(26), nullable=True)
   is_promo = Column(Boolean, default=False)
-  decimals = Column(Integer, default=2)
+  decimals = Column(Integer, default=10)
   currency = Column(String(8), default='USD')
   details = Column(Text, nullable=True)                 # JSON string
   history = Column(Boolean, default=True)
@@ -36,8 +37,11 @@ class SQLAccount(CommonBase, Base):
 
   # Indexes for optimal query performance
   __table_args__ = (
-    # Index for owner_id queries (very common pattern)
-    Index('idx_accounts_owner_id', 'owner_id'),
+    # Index for workspace_id queries (very common pattern)
+    Index('idx_accounts_workspace_id', 'workspace_id'),
+    
+    # Index for account_code queries (unique lookup)
+    Index('idx_accounts_account_code', 'account_code'),
     
     # Index for last transaction tracking
     Index('idx_accounts_last_tx', 'last_tx'),

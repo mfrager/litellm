@@ -7,6 +7,7 @@ import smtplib
 import threading
 import time
 import traceback
+from fastapi import Request
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -496,6 +497,7 @@ class ProxyLogging:
             "pass_through_endpoint",
             "rerank",
         ],
+        request: Optional[Request],
     ) -> None:
         pass
 
@@ -514,6 +516,7 @@ class ProxyLogging:
             "pass_through_endpoint",
             "rerank",
         ],
+        request: Optional[Request],
     ) -> dict:
         pass
 
@@ -531,6 +534,7 @@ class ProxyLogging:
             "pass_through_endpoint",
             "rerank",
         ],
+        request: Optional[Request],
     ) -> Optional[dict]:
         """
         Allows users to modify/reject the incoming request to the proxy, without having to deal with parsing Request body.
@@ -590,6 +594,7 @@ class ProxyLogging:
                         cache=self.call_details["user_api_key_cache"],
                         data=data,  # type: ignore
                         call_type=call_type,
+                        request=request,
                     )
                     if response is not None:
                         data = await self.process_pre_call_hook_response(

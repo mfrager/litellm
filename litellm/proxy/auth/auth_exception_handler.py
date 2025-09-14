@@ -76,13 +76,14 @@ class UserAPIKeyAuthExceptionHandler:
                 request=request,
                 use_x_forwarded_for=general_settings.get("use_x_forwarded_for", False),
             )
-            verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.user_api_key_auth(): Exception occured - {}\nRequester IP Address:{}".format(
-                    str(e),
-                    requester_ip,
-                ),
-                extra={"requester_ip": requester_ip},
-            )
+            if not(isinstance(e, HTTPException)):
+                verbose_proxy_logger.exception(
+                    "litellm.proxy.proxy_server.user_api_key_auth(): Exception occured - {}\nRequester IP Address:{}".format(
+                        str(e),
+                        requester_ip,
+                    ),
+                    extra={"requester_ip": requester_ip},
+                )
 
             # Log this exception to OTEL, Datadog etc
             user_api_key_dict = UserAPIKeyAuth(

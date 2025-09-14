@@ -2,7 +2,8 @@
 ## Checks if key is allowed to use the cache controls passed in to the completion() call
 
 
-from fastapi import HTTPException
+from typing import Optional
+from fastapi import HTTPException, Request
 
 from litellm import verbose_logger
 from litellm._logging import verbose_proxy_logger
@@ -22,6 +23,7 @@ class _PROXY_CacheControlCheck(CustomLogger):
         cache: DualCache,
         data: dict,
         call_type: str,
+        request: Optional[Request],
     ):
         try:
             verbose_proxy_logger.debug("Inside Cache Control Check Pre-Call Hook")

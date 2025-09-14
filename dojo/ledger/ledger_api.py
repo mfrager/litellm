@@ -3,6 +3,7 @@ from typing import List, Optional, Union, TypedDict
 from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
+import re
 
 class LedgerSide(Enum):
     DEBIT = "debit"
@@ -29,11 +30,12 @@ class TransactionType(Enum):
 class LedgerAccount(BaseModel):
     id: Union[int, str] = Field(..., description="Account ID")
     name: str = Field(..., description="Account name")
+    account_code: str = Field(..., description="Unique account code")
     account_type: AccountType = Field(..., description="Account type")
     side: LedgerSide = Field(..., description="Account Side")
-    owner_id: Optional[int] = Field(None, description="Account Owner ID")
+    workspace_id: Optional[int] = Field(None, description="Account Workspace ID")
     is_promo: bool = Field(False, description="Promo")
-    decimals: int = Field(2, description="Decimals")
+    decimals: int = Field(10, description="Decimals")
     currency: str = Field("USD", description="Currency")
     details: Optional[dict] = Field(..., description="Account details")
     history: bool = Field(True, description="Account history")
@@ -216,3 +218,14 @@ class LedgerAPI(ABC):
         """
         pass
 
+def generate_account_code(name: str, workspace_id: Optional[int] = None) -> str:
+    """Generate a unique account code from account name and workspace_id."""
+    # Convert to lowercase and replace spaces/special chars with underscores
+    code = re.sub(r'[^a-zA-Z0-9\s]', '', name.lower())
+    code = re.sub(r'\s+', '_', code.strip())
+    
+    # Add prefix based on workspace_id
+    if workspace_id is None or workspace_id == 100:  # Company accounts
+        return f"internal_{code}"
+    else:  # User accounts
+        return f"user_{workspace_id}_{code}"

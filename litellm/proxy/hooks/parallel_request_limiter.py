@@ -3,7 +3,7 @@ import sys
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple, TypedDict, Union
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from pydantic import BaseModel
 
 import litellm
@@ -183,6 +183,7 @@ class _PROXY_MaxParallelRequestsHandler(CustomLogger):
         cache: DualCache,
         data: dict,
         call_type: str,
+        request: Optional[Request],
     ):
         self.print_verbose("Inside Max Parallel Request Pre-Call Hook")
         api_key = user_api_key_dict.api_key

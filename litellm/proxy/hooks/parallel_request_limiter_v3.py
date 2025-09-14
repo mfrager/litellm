@@ -17,7 +17,7 @@ from typing import (
     cast,
 )
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from litellm import DualCache
 from litellm._logging import verbose_proxy_logger
@@ -379,6 +379,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         cache: DualCache,
         data: dict,
         call_type: str,
+        request: Optional[Request],
     ):
         """
         Pre-call hook to check rate limits before making the API call.
