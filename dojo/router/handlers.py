@@ -17,8 +17,10 @@ from litellm.integrations.custom_logger import CustomLogger
 dojo_path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(dojo_path))
 
-from models.router_model import Token, Workspace
+from models.router_model import Token, Workspace, User
 from ledger.sql_ledger import SQLLedgerAPI
+from ledger.ledger_api import Ledger
+from .accounts import LedgerManager
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:\t%(message)s")
 
@@ -29,7 +31,6 @@ async def auth_hook(request: Request, api_key: str) -> UserAPIKeyAuth:
     
     async with async_session() as session:
         # Look up Token object based on api_key matching the "token" column using ORM
-        from sqlalchemy import select
         stmt = select(Token).where(Token.token == api_key)
         result = await session.execute(stmt)
         token = result.scalar_one_or_none()
@@ -46,18 +47,59 @@ async def auth_hook(request: Request, api_key: str) -> UserAPIKeyAuth:
         )
 
 async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, data: dict, call_type: str, request: Optional[Request]):
-    #dynamic_routing = False
-    #if dynamic_routing:
-    #    model = data['model']
-    #    messages = data['messages']
-    #logging.warning(f"Pre-Call Hook - model:{data['model']}")
-    #logging.warning(f"Pre-Call Hook - call_type:{call_type} data:{data}")
-
     session = request.state.dojo_db_session
     token = request.state.dojo_token
-    stmt = select(Workspace).where(Workspace.id == token.workspace_id)
-    result = await session.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    await session.close()
-    logging.warning(f"async_pre_call_hook: {workspace.ts_created}")
+    
+    try:
+        # Get workspace information
+        stmt = select(Workspace).where(Workspace.id == token.workspace_id)
+        result = await session.execute(stmt)
+        workspace = result.scalar_one_or_none()
+        
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        
+        # Get user information
+        stmt = select(User).where(User.id == workspace.owner_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Initialize ledger manager and ledger API using existing session
+        ledger_config = Ledger(
+            id=1,
+            accounts=[],
+            has_journal=True,
+            has_transactions=True,
+            config={"currency": "USD", "decimals": 10}
+        )
+        sql_ledger_api = SQLLedgerAPI(ledger_config, session=session)
+        
+        # Initialize ledger manager
+        ledger_manager = LedgerManager(sql_ledger_api)
+        
+        # Check user balance (assumes account exists)
+        has_sufficient_balance, current_balance, error_msg = await ledger_manager.check_user_balance(user, workspace)
+        
+        if not has_sufficient_balance:
+            raise HTTPException(
+                status_code=402, 
+                detail=f"Insufficient balance: {error_msg}"
+            )
+        
+        # Log successful balance check
+        logging.warning(f"Balance check passed for user {user.email}: ${current_balance:.10f}")
+        
+        # Store ledger manager in request state for potential use in post-call hook
+        request.state.ledger_manager = ledger_manager
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        logging.error(f"Error in pre_call_hook: {e}")
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal server error during balance check")
 

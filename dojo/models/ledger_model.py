@@ -162,19 +162,3 @@ class SQLTransaction(Base):
     # Index for reference lookups (useful for external system integration)
     Index('idx_transactions_reference', 'reference'),
   )
-
-
-class SQLLedger(CommonBase, Base):
-  """SQLAlchemy model for ledger configuration"""
-  __tablename__ = 'ledgers'
-  
-  id = Column(String(26), primary_key=True, default=generate_ulid)
-  config = Column(Text, nullable=True)                # JSON string
-
-  # Indexes for optimal query performance
-  __table_args__ = (
-    # Index for temporal queries
-    Index('idx_ledgers_created_at', 'ts_created'),
-    Index('idx_ledgers_updated_at', 'ts_updated'),
-  )
-

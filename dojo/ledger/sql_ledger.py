@@ -21,7 +21,6 @@ from models.ledger_model import (
   SQLAccountTransaction,
   SQLJournalEntry,
   SQLTransaction,
-  SQLLedger,
   Base,
 )
 
@@ -52,49 +51,79 @@ class SQLLedgerAPI(LedgerAPI):
   and provides ACID transaction support with trigger-based balance updates.
   """
   
-  def __init__(self, ledger: Ledger, database_url: str):
+  def __init__(self, ledger: Ledger, database_url: Optional[str] = None, session: Optional[AsyncSession] = None):
     """
     Initialize the SQL Ledger API.
     
     Args:
       ledger: Ledger configuration
       database_url: SQLAlchemy async database URL (e.g., 'postgresql+asyncpg://user:pass@localhost/db')
+      session: Optional existing AsyncSession to use instead of creating new connections
     """
     super().__init__(ledger)
-    self.engine = create_async_engine(database_url, echo=False)
-    self.SessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
-    self._session: Optional[AsyncSession] = None
-    self.database_url = database_url
+    
+    if session is not None:
+      # Use provided session
+      self._session = session
+      self.engine = None
+      self.SessionLocal = None
+      self.database_url = None
+      self._external_session = True
+    elif database_url is not None:
+      # Create new engine and session factory
+      self.engine = create_async_engine(database_url, echo=False)
+      self.SessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+      self._session: Optional[AsyncSession] = None
+      self.database_url = database_url
+      self._external_session = False
+    else:
+      raise ValueError("Either database_url or session must be provided")
  
   async def begin_transaction(self) -> None:
     """Begin a database transaction."""
-    if self._session is not None:
-      raise RuntimeError("Transaction already active")
-    
-    self._session = self.SessionLocal()
-    await self._session.begin()
+    if self._external_session:
+      # External session - assume it's already in a transaction
+      pass
+    else:
+      # Check if we already have a session
+      if self._session is not None:
+        raise RuntimeError("Transaction already active")
+      
+      # Create new session and begin transaction
+      self._session = self.SessionLocal()
+      await self._session.begin()
   
   async def end_transaction(self) -> None:
     """Commit the current transaction."""
     if self._session is None:
       raise RuntimeError("No active transaction")
     
-    try:
-      await self._session.commit()
-    finally:
-      await self._session.close()
-      self._session = None
+    if self._external_session:
+      # External session - don't commit or close, let caller handle it
+      pass
+    else:
+      # Own session - commit and close
+      try:
+        await self._session.commit()
+      finally:
+        await self._session.close()
+        self._session = None
   
   async def cancel_transaction(self) -> None:
     """Rollback the current transaction."""
     if self._session is None:
       raise RuntimeError("No active transaction")
     
-    try:
-      await self._session.rollback()
-    finally:
-      await self._session.close()
-      self._session = None
+    if self._external_session:
+      # External session - don't rollback or close, let caller handle it
+      pass
+    else:
+      # Own session - rollback and close
+      try:
+        await self._session.rollback()
+      finally:
+        await self._session.close()
+        self._session = None
   
   async def create_accounts(self, account_list: List[LedgerAccountTransaction]) -> None:
     """Create new ledger accounts."""
@@ -540,14 +569,28 @@ class SQLLedgerAPI(LedgerAPI):
   def get_session(self) -> AsyncSession:
     """Get the current database session."""
     if self._session is None:
-      raise RuntimeError("No active transaction")
+      if self._external_session:
+        raise RuntimeError("External session not available")
+      else:
+        raise RuntimeError("No active transaction")
     return self._session
   
   async def close_session(self) -> None:
     """Close the current database session."""
     if self._session is not None:
-      await self._session.close()
+      if not self._external_session:
+        await self._session.close()
       self._session = None
+  
+  async def close(self) -> None:
+    """Close the database engine and any active sessions."""
+    if self._session is not None:
+      if not self._external_session:
+        await self._session.close()
+      self._session = None
+    
+    if self.engine is not None:
+      await self.engine.dispose()
   
   async def get_account_balance(self, account_id: Union[int, str]) -> int:
     """Get current balance for an account."""

@@ -585,7 +585,7 @@ class TestComprehensiveLedgerAPI:
             # Verify specific transaction effects
             await self.verify_transaction_effects(sql_ledger_api, comprehensive_accounts, initial_balances, final_balances)
             
-            # Display comprehensive general ledger reports
+            # Display comprehensive general ledger report
             self.display_general_ledger(transactions)
             print("\n")
             self.display_transaction_register(transactions)
