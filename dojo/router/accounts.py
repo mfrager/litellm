@@ -17,13 +17,14 @@ from ulid import ULID
 # Add the parent directory to the path to import ledger modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ledger.ledger_api import LedgerAccount, AccountType, LedgerSide, LedgerAccountTransaction
+from ledger.ledger_api import LedgerAccount, AccountType, LedgerSide, LedgerAccountTransaction, Ledger
 from ledger.ledger_tx_builder import LedgerTransactionBuilder
 from ledger.sql_ledger import SQLLedgerAPI
 
 from models.router_model import User, Workspace
 from models.ledger_model import SQLAccount
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Constants
 DECIMALS = 10  # 10 decimal places for high precision
@@ -41,14 +42,26 @@ class LedgerManager:
     - Access account IDs for transaction building
     """
     
-    def __init__(self, sql_ledger_api: SQLLedgerAPI):
+    def __init__(self, session: AsyncSession):
         """
         Initialize the ledger manager.
         
         Args:
-            sql_ledger_api: SQL Ledger API instance for database operations
+            session: SQLAlchemy async session for database operations
         """
-        self.sql_ledger_api = sql_ledger_api
+        self.session = session
+        
+        # Create ledger configuration
+        self.ledger_config = Ledger(
+            id=1,
+            accounts=[],
+            has_journal=True,
+            has_transactions=True,
+            config={"currency": "USD", "decimals": DECIMALS}
+        )
+        
+        # Create SQL Ledger API with the session
+        self.sql_ledger_api = SQLLedgerAPI(self.ledger_config, session=session)
         self.internal_accounts: Dict[str, LedgerAccount] = {}
     
     async def get_account_id(self, account_code: str) -> str:
