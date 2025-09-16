@@ -33,7 +33,7 @@ class LedgerAccount(BaseModel):
     account_code: str = Field(..., description="Unique account code")
     account_type: AccountType = Field(..., description="Account type")
     side: LedgerSide = Field(..., description="Account Side")
-    workspace_id: Optional[int] = Field(None, description="Account Workspace ID")
+    workspace_id: Optional[Union[int, str]] = Field(None, description="Account Workspace ID")
     is_promo: bool = Field(False, description="Promo")
     decimals: int = Field(10, description="Decimals")
     currency: str = Field("USD", description="Currency")
@@ -72,7 +72,7 @@ class LedgerTransaction(BaseModel):
     entries: Optional[List[LedgerJournalEntry]] = Field(..., description="Journal entries")
     transfers: List[LedgerAccountTransfer] = Field(..., description="Transfers")
     ts_created: Optional[datetime] = Field(None, description="Transaction timestamp")
-    user_id: Optional[int] = Field(..., description="User ID")
+    user_id: Optional[Union[int, str]] = Field(..., description="User ID")
     reference: Optional[str] = Field(..., description="Transaction reference")
     description: Optional[str] = Field(..., description="Transaction description")
     details: Optional[dict] = Field(..., description="Transaction details")
@@ -122,30 +122,30 @@ class LedgerAPI(ABC):
         self.ledger = ledger
 
     @abstractmethod
-    def begin_transaction(self) -> None:
+    async def begin_transaction(self) -> None:
         pass
 
     @abstractmethod
-    def end_transaction(self) -> None:
+    async def end_transaction(self) -> None:
         pass
 
     @abstractmethod
-    def create_accounts(self, account_list: List[LedgerAccountTransaction]) -> None:
+    async def create_accounts(self, account_list: List[LedgerAccountTransaction]) -> None:
         pass
 
-    def create_transactions(self, tx_list: List[LedgerLogicalTransaction]) -> None:
-        pass
-
-    @abstractmethod
-    def create_journal_entries(self, entry_list: List[LedgerJournalTransaction]) -> None:
+    async def create_transactions(self, tx_list: List[LedgerLogicalTransaction]) -> None:
         pass
 
     @abstractmethod
-    def create_transfers(self, transfer_list: List[LedgerTransferTransaction]) -> None:
+    async def create_journal_entries(self, entry_list: List[LedgerJournalTransaction]) -> None:
         pass
 
     @abstractmethod
-    def lookup_accounts(self, account_ids: List[Union[int, str]]) -> List[LedgerAccount]:
+    async def create_transfers(self, transfer_list: List[LedgerTransferTransaction]) -> None:
+        pass
+
+    @abstractmethod
+    async def lookup_accounts(self, account_ids: List[Union[int, str]]) -> List[LedgerAccount]:
         """
         Fetch accounts by ID:
         - account_ids: List[Union[int, str]]
@@ -153,7 +153,7 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    def lookup_transfers(self, transfer_ids: List[Union[int, str]]) -> List[LedgerAccountTransfer]:
+    async def lookup_transfers(self, transfer_ids: List[Union[int, str]]) -> List[LedgerAccountTransfer]:
         """
         Fetch transfers by ID:
         - transfer_ids: List[Union[int, str]]
@@ -161,7 +161,7 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    def lookup_transactions(self, transaction_ids: List[Union[int, str]], journal: bool = True, transfers: bool = True) -> List[LedgerTransaction]:
+    async def lookup_transactions(self, transaction_ids: List[Union[int, str]], journal: bool = True, transfers: bool = True) -> List[LedgerTransaction]:
         """
         Fetch transactions by ID:
         - transaction_ids: List[Union[int, str]]
@@ -169,7 +169,7 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    def lookup_entries(self, entry_ids: List[Union[int, str]]) -> List[LedgerJournalEntry]:
+    async def lookup_entries(self, entry_ids: List[Union[int, str]]) -> List[LedgerJournalEntry]:
         """
         Fetch journal entries by ID:
         - entry_ids: List[Union[int, str]]
@@ -177,42 +177,42 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    def get_account_transfers(self, filter: LedgerAccountFilter) -> List[LedgerAccountTransfer]:
+    async def get_account_transfers(self, filter: LedgerAccountFilter) -> List[LedgerAccountTransfer]:
         """
         Fetch transfers involving a specific account using an account filter.
         """
         pass
 
     @abstractmethod
-    def get_account_balances(self, filter: LedgerAccountFilter) -> List[LedgerAccountBalance]:
+    async def get_account_balances(self, filter: LedgerAccountFilter) -> List[LedgerAccountBalance]:
         """
         Fetch historical balances for an account using an account filter.
         """
         pass
 
     @abstractmethod
-    def query_accounts(self, query: LedgerQuery) -> List[LedgerAccount]:
+    async def query_accounts(self, query: LedgerQuery) -> List[LedgerAccount]:
         """
         Query accounts by various fields.
         """
         pass
 
     @abstractmethod
-    def query_transfers(self, query: LedgerQuery) -> List[LedgerAccountTransfer]:
+    async def query_transfers(self, query: LedgerQuery) -> List[LedgerAccountTransfer]:
         """
         Query transfers by various fields.
         """
         pass
 
     @abstractmethod
-    def query_transactions(self, query: LedgerQuery, journal: bool = True, transfers: bool = True) -> List[LedgerTransaction]:
+    async def query_transactions(self, query: LedgerQuery, journal: bool = True, transfers: bool = True) -> List[LedgerTransaction]:
         """
         Query transactions by various fields.
         """
         pass
 
     @abstractmethod
-    def query_journal(self, query: LedgerQuery) -> List[LedgerJournalEntry]:
+    async def query_journal(self, query: LedgerQuery) -> List[LedgerJournalEntry]:
         """
         Query journal entries by various fields.
         """

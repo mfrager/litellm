@@ -6,7 +6,7 @@ from models.router_model import Token, User, Workspace
 class RouterAuth:
     """Simple authentication class for creating users associated with workspaces."""
     
-    def create_user(self, email: str, keycloak_uuid: str = None, first_name: str = None, 
+    async def create_user(self, email: str, keycloak_uuid: str = None, first_name: str = None, 
                    last_name: str = None, phone: str = None, company: str = None, 
                    is_active: bool = True, last_login = None) -> tuple[User, Workspace]:
         """Create a new user instance with an associated workspace."""
@@ -33,12 +33,12 @@ class RouterAuth:
         
         return user, workspace
     
-    def create_token(self, user_id: str) -> Token:
-        """Create a new token instance for a user."""
+    async def create_token(self, workspace_id: str) -> Token:
+        """Create a new token instance for a workspace."""
         alphabet = string.ascii_letters  # A-Za-z
         token = ''.join(secrets.choice(alphabet) for _ in range(64))
         return Token(
             id=str(ULID()),
-            user_id=user_id,
+            workspace_id=workspace_id,
             token=token
         )

@@ -117,19 +117,19 @@ class LedgerManager:
         return self.internal_accounts[account_code].id
     
     
-    async def get_user_balance_account(self, user: User, workspace: Workspace) -> Optional[LedgerAccount]:
+    async def get_workspace_balance_account(self, workspace: Workspace) -> Optional[LedgerAccount]:
         """
-        Get the user's balance account for a given workspace.
+        Get the workspace's balance account.
         
         Args:
-            user: The user object
             workspace: The workspace object
             
         Returns:
-            The user's balance account or None if not found
+            The workspace's balance account or None if not found
         """
-        # User account code format: "user_{user.id}_balance"
-        account_code = f"user_{user.id}_balance"
+        # Workspace account code format: "workspace_{workspace.id}_balance"
+        account_code = f"workspace_{workspace.id}_balance"
+        logging.warning(f"account_code: {account_code}")
         
         await self.sql_ledger_api.begin_transaction()
         try:
@@ -139,6 +139,8 @@ class LedgerManager:
             stmt = select(SQLAccount).where(SQLAccount.account_code == account_code)
             result = await session.execute(stmt)
             sql_account = result.scalar_one_or_none()
+
+            logging.warning(f"sql_account: {sql_account}")
             
             if sql_account:
                 # Convert SQLAccount to LedgerAccount
@@ -165,23 +167,24 @@ class LedgerManager:
         finally:
             await self.sql_ledger_api.end_transaction()
     
-    async def check_user_balance(self, user: User, workspace: Workspace) -> Tuple[bool, Decimal, Optional[str]]:
+    async def check_workspace_balance(self, workspace: Workspace) -> Tuple[bool, Decimal, Optional[str]]:
         """
-        Check if user has sufficient balance for operations.
+        Check if workspace has sufficient balance for operations.
         
         Args:
-            user: The user object
             workspace: The workspace object
             
         Returns:
             Tuple of (has_sufficient_balance, current_balance, error_message)
         """
+
+        logging.warning(f"Checking workspace balance for workspace {workspace.id}")
         
-        # Get user's balance account
-        balance_account = await self.get_user_balance_account(user, workspace)
+        # Get workspace's balance account
+        balance_account = await self.get_workspace_balance_account(workspace)
         
         if not balance_account:
-            return False, Decimal("0"), f"No balance account found for user {user.email}"
+            return False, Decimal("0"), f"No ledger account found."
         
         # Get current balance
         await self.sql_ledger_api.begin_transaction()
@@ -202,18 +205,17 @@ class LedgerManager:
         has_sufficient_balance = available_balance >= MINIMUM_BALANCE
         
         if not has_sufficient_balance:
-            error_msg = f"Insufficient balance. Required: ${MINIMUM_BALANCE}, Available: ${available_balance:.10f}"
+            error_msg = f"Required: ${MINIMUM_BALANCE}, Available: ${available_balance:.10f}"
         else:
             error_msg = None
         
         return has_sufficient_balance, available_balance, error_msg
     
-    async def create_user_balance_account(self, user: User, workspace: Workspace) -> LedgerAccount:
+    async def create_workspace_balance_account(self, workspace: Workspace) -> LedgerAccount:
         """
-        Create a user balance account if it doesn't exist.
+        Create a workspace balance account if it doesn't exist.
         
         Args:
-            user: The user object
             workspace: The workspace object
             
         Returns:
@@ -221,30 +223,25 @@ class LedgerManager:
         """
         
         # Check if account already exists
-        existing_account = await self.get_user_balance_account(user, workspace)
+        existing_account = await self.get_workspace_balance_account(workspace)
         if existing_account:
             return existing_account
         
         # Convert workspace ID to integer for ledger accounts
         workspace_id = hash(workspace.id) % 1000000
         
-        # Create user balance account (Liability account for unearned revenue)
-        user_balance_account = LedgerAccount(
+        # Create workspace balance account (Liability account for unearned revenue)
+        workspace_balance_account = LedgerAccount(
             id=str(ULID()),
-            name=f"Unearned Revenue - {user.first_name or 'User'} {user.last_name or ''}".strip(),
-            account_code=f"user_{user.id}_balance",
+            name=f"Unearned Revenue - Workspace {workspace.id}",
+            account_code=f"workspace_{workspace.id}_balance",
             account_type=AccountType.LIABILITY,
             side=LedgerSide.CREDIT,
             workspace_id=workspace_id,
             is_promo=False,
             decimals=DECIMALS,
             currency="USD",
-            details={
-                "entity": "User",
-                "user_id": user.id,
-                "user_email": user.email,
-                "account_purpose": "unearned_revenue"
-            },
+            details={},
             history=True
         )
         
@@ -252,13 +249,13 @@ class LedgerManager:
         await self.sql_ledger_api.begin_transaction()
         try:
             await self.sql_ledger_api.create_accounts([
-                LedgerAccountTransaction(accounts=[user_balance_account])
+                LedgerAccountTransaction(accounts=[workspace_balance_account])
             ])
         finally:
             await self.sql_ledger_api.end_transaction()
         
-        logging.warning(f"✅ Created balance account for user {user.email}")
-        return user_balance_account
+        logging.warning(f"✅ Created balance account for workspace {workspace.id}")
+        return workspace_balance_account
     
     async def create_transaction_builder(
         self, 

@@ -61,8 +61,8 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
     # Initialize ledger manager with session
     ledger_manager = LedgerManager(session)
     
-    # Check user balance (assumes account exists)
-    has_sufficient_balance, current_balance, error_msg = await ledger_manager.check_user_balance(user, workspace)
+    # Check workspace balance (assumes account exists)
+    has_sufficient_balance, current_balance, error_msg = await ledger_manager.check_workspace_balance(workspace)
     
     if not has_sufficient_balance:
         raise HTTPException(
@@ -71,7 +71,7 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
         )
     
     # Log successful balance check
-    logging.warning(f"Balance check passed for user {user.email}: ${current_balance:.10f}")
+    logging.warning(f"Balance check passed for workspace {workspace.id}: ${current_balance:.10f}")
     
     # Store ledger manager in request state for potential use in post-call hook
     request.state.ledger_manager = ledger_manager

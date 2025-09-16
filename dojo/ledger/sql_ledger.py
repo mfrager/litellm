@@ -10,7 +10,7 @@ from ulid import ULID
 from decimal import Decimal
 from datetime import datetime, timezone
 from sqlalchemy import create_engine, text, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker, selectinload
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union, Dict, Any
@@ -70,9 +70,20 @@ class SQLLedgerAPI(LedgerAPI):
       self.database_url = None
       self._external_session = True
     elif database_url is not None:
-      # Create new engine and session factory
-      self.engine = create_async_engine(database_url, echo=False)
-      self.SessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+      # Create new engine and session factory with robust settings for testing
+      self.engine = create_async_engine(
+          database_url, 
+          echo=False,
+          pool_pre_ping=True,
+          pool_recycle=300,
+          pool_timeout=30
+      )
+      self.SessionLocal = async_sessionmaker(
+          autocommit=False, 
+          autoflush=False, 
+          bind=self.engine,
+          expire_on_commit=False
+      )
       self._session: Optional[AsyncSession] = None
       self.database_url = database_url
       self._external_session = False
@@ -435,7 +446,10 @@ class SQLLedgerAPI(LedgerAPI):
     """Query transactions by various fields."""
     session = self.get_session()
     
-    q = select(SQLTransaction)
+    q = select(SQLTransaction).options(
+        selectinload(SQLTransaction.journal_entries),
+        selectinload(SQLTransaction.account_transactions)
+    )
     
     if query.get('transaction_id'):
       transaction_id = str(query['transaction_id'])
@@ -528,8 +542,8 @@ class SQLLedgerAPI(LedgerAPI):
             for entry in sql_transaction.journal_entries]
     
     transfers = []
-    if include_transfers and sql_transaction.transfers:
-      for transfer in sql_transaction.transfers:
+    if include_transfers and sql_transaction.account_transactions:
+      for transfer in sql_transaction.account_transactions:
         converted_transfer = self._convert_sql_account_transaction_to_ledger_transfer(transfer)
         transfers.append(converted_transfer)
     
@@ -584,13 +598,22 @@ class SQLLedgerAPI(LedgerAPI):
   
   async def close(self) -> None:
     """Close the database engine and any active sessions."""
+    # Close active session first
     if self._session is not None:
       if not self._external_session:
-        await self._session.close()
+        try:
+          # Close session gracefully
+          await self._session.close()
+        except Exception as e:
+          print(f"Warning: Error closing session: {e}")
       self._session = None
     
+    # Dispose of engine with timeout
     if self.engine is not None:
-      await self.engine.dispose()
+      try:
+        await self.engine.dispose()
+      except Exception as e:
+        print(f"Warning: Error disposing engine: {e}")
   
   async def get_account_balance(self, account_id: Union[int, str]) -> int:
     """Get current balance for an account."""
@@ -606,9 +629,6 @@ class SQLLedgerAPI(LedgerAPI):
     async with self.engine.begin() as conn:
       await conn.run_sync(Base.metadata.create_all)
   
-  async def close(self) -> None:
-    """Close the database engine and clean up resources."""
-    await self.engine.dispose()
 
   def _convert_sql_account_transaction_to_ledger_transfer(self, sql_transaction: SQLAccountTransaction, with_balance: bool = True) -> LedgerAccountTransfer:
     """Convert SQLAccountTransaction model to LedgerAccountTransfer pydantic model."""
