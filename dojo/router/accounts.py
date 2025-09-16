@@ -109,7 +109,7 @@ class LedgerManager:
                     )
                     self.internal_accounts[account_code] = ledger_account
                 else:
-                    raise ValueError(f"Account '{account_code}' not found. All internal accounts must be pre-created.")
+                    raise ValueError(f"Account '{account_code}' not found.")
             finally:
                 await self.sql_ledger_api.end_transaction()
         
@@ -255,6 +255,54 @@ class LedgerManager:
         
         return workspace_balance_account
     
+    async def find_or_create_account_id(self, account_code: str, account_type: str = "liability") -> str:
+        """
+        Find an existing account or create it on the fly.
+        
+        Args:
+            account_code: The account code to find or create
+            account_type: Type of account to create ("liability" for now)
+            
+        Returns:
+            The account ID
+        """
+        # First try to get existing account
+        try:
+            return await self.get_account_id(account_code)
+        except ValueError:
+            # Account doesn't exist, create it
+            pass
+        
+        # Create new account based on type
+        if account_type == "liability":
+            # Create liability account for provider payable
+            provider_account = LedgerAccount(
+                id=str(ULID()),
+                name=f"Payable - {account_code}",
+                account_code=account_code,
+                account_type=AccountType.LIABILITY,
+                side=LedgerSide.CREDIT,
+                workspace_id=None,
+                is_promo=False,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"provider": account_code},
+                history=True
+            )
+        else:
+            raise ValueError(f"Unsupported account type: {account_type}")
+        
+        # Create the account
+        await self.sql_ledger_api.begin_transaction()
+        try:
+            await self.sql_ledger_api.create_accounts([
+                LedgerAccountTransaction(accounts=[provider_account])
+            ])
+        finally:
+            await self.sql_ledger_api.end_transaction()
+        
+        return provider_account.id
+    
     async def create_transaction_builder(
         self, 
         account_codes: List[str]
@@ -301,6 +349,9 @@ class LedgerManager:
             elif account_code.startswith("workspace_") and account_code.endswith("_balance"):
                 # Handle dynamic workspace balance accounts
                 account_ids[account_code] = await self.get_account_id(account_code)
+            elif account_code.startswith("payable_"):
+                # Handle dynamic provider payable accounts
+                account_ids[account_code] = await self.find_or_create_account_id(account_code, "liability")
             else:
                 raise ValueError(f"Unknown account code: {account_code}. Available codes: {list(account_mapping.keys())}")
         
@@ -336,8 +387,12 @@ class LedgerManager:
             workspace_balance_code=workspace_balance_code
         )
         
+        # Create provider-specific payable account
+        provider_payable_code = f"payable_{provider}"
+        await self.find_or_create_account_id(provider_payable_code, "liability")
+        
         # Create expense transaction builder for the original amount (cost)
-        expense_tx_builder = await self.create_transaction_builder(["internal_cost", "internal_payable"])
+        expense_tx_builder = await self.create_transaction_builder(["internal_cost", provider_payable_code])
         
         # Execute the expense transaction for the original amount
         expense_transaction = await expense_tx_builder.expense(

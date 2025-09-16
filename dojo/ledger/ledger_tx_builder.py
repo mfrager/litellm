@@ -171,6 +171,17 @@ class LedgerTransactionBuilder:
 
   async def expense(self, *, amount, expense_type: str = "service_fees", name: Optional[str] = None, description: Optional[str] = None, user_id: int = 100) -> LedgerTransaction:
     amt = to_micro_units(amount)
+    
+    # Find the payable account (could be internal_payable or payable_{provider})
+    payable_account = None
+    for account_code in self.account_ids.keys():
+      if account_code.startswith("payable_") or account_code == "internal_payable":
+        payable_account = account_code
+        break
+    
+    if not payable_account:
+      raise ValueError("No payable account found in account_ids")
+    
     entries = [
       LedgerJournalEntry(
         id=str(ULID()),
@@ -182,7 +193,7 @@ class LedgerTransactionBuilder:
       ),
       LedgerJournalEntry(
         id=str(ULID()),
-        account_id=self.account_ids["internal_payable"],
+        account_id=self.account_ids[payable_account],
         debit=0,
         credit=amt,
         transaction_id=None,
