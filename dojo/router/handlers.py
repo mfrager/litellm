@@ -53,11 +53,6 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
     result = await session.execute(stmt)
     workspace = result.scalar_one_or_none()
     
-    # Get user information
-    stmt = select(User).where(User.id == workspace.owner_id)
-    result = await session.execute(stmt)
-    user = result.scalar_one_or_none()
-    
     # Initialize ledger manager with session
     ledger_manager = LedgerManager(session)
     
@@ -72,7 +67,32 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
     
     # Log successful balance check
     logging.warning(f"Balance check passed for workspace {workspace.id}: ${current_balance:.10f}")
-    
-    # Store ledger manager in request state for potential use in post-call hook
-    request.state.ledger_manager = ledger_manager
 
+    # Store workspace
+    user_api_key_dict.org_id = workspace.id
+    data['metadata']['user_api_key_org_id'] = workspace.id
+
+    #logging.warning(f"pre_call_hook data: {pprint.pformat(data)}")
+
+    # Clear token and workspace information from request state
+    request.state.dojo_token = None
+    request.state.dojo_workspace = None
+    
+    # Close session connection
+    await session.close()
+
+async def post_call_hook(kwargs, response_obj, start_time, end_time):
+    workspace_id = kwargs.get("litellm_params").get("metadata").get("user_api_key_org_id")
+    model = kwargs.get("model")
+    response_cost = litellm.completion_cost(completion_response=response_obj)
+
+    logging.warning(f"Post-call Success - workspace:{workspace_id} model:{model} cost:{response_cost:.10f} tokens:{response_obj.usage.total_tokens} (in: {response_obj.usage.prompt_tokens}, out: {response_obj.usage.completion_tokens}, cached: {response_obj.usage.prompt_tokens_details.cached_tokens})")
+
+    dburl = os.environ['DATABASE_ASYNC_URL']
+    async_engine = create_async_engine(dburl)
+    async_session = async_sessionmaker(async_engine, expire_on_commit=False)
+    
+    async with async_session() as session:
+        ledger_manager = LedgerManager(session)
+        
+ 

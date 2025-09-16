@@ -129,7 +129,7 @@ class LedgerManager:
         """
         # Workspace account code format: "workspace_{workspace.id}_balance"
         account_code = f"workspace_{workspace.id}_balance"
-        logging.warning(f"account_code: {account_code}")
+        #logging.warning(f"account_code: {account_code}")
         
         await self.sql_ledger_api.begin_transaction()
         try:
@@ -140,7 +140,7 @@ class LedgerManager:
             result = await session.execute(stmt)
             sql_account = result.scalar_one_or_none()
 
-            logging.warning(f"sql_account: {sql_account}")
+            #logging.warning(f"sql_account: {sql_account}")
             
             if sql_account:
                 # Convert SQLAccount to LedgerAccount
@@ -178,7 +178,7 @@ class LedgerManager:
             Tuple of (has_sufficient_balance, current_balance, error_message)
         """
 
-        logging.warning(f"Checking workspace balance for workspace {workspace.id}")
+        #logging.warning(f"Checking workspace balance for workspace {workspace.id}")
         
         # Get workspace's balance account
         balance_account = await self.get_workspace_balance_account(workspace)
@@ -254,7 +254,6 @@ class LedgerManager:
         finally:
             await self.sql_ledger_api.end_transaction()
         
-        logging.warning(f"✅ Created balance account for workspace {workspace.id}")
         return workspace_balance_account
     
     async def create_transaction_builder(
