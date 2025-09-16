@@ -17,7 +17,7 @@ from ulid import ULID
 # Add the parent directory to the path to import ledger modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ledger.ledger_api import LedgerAccount, AccountType, LedgerSide, LedgerAccountTransaction, Ledger
+from ledger.ledger_api import AccountType, Ledger, LedgerAccount, LedgerSide, LedgerAccountTransaction, LedgerLogicalTransaction
 from ledger.ledger_tx_builder import LedgerTransactionBuilder
 from ledger.sql_ledger import SQLLedgerAPI
 
@@ -107,7 +107,6 @@ class LedgerManager:
                         ts_created=sql_account.ts_created,
                         ts_updated=sql_account.ts_updated
                     )
-                    logging.warning(f"   ✅ Found existing account: {account_code}")
                     self.internal_accounts[account_code] = ledger_account
                 else:
                     raise ValueError(f"Account '{account_code}' not found. All internal accounts must be pre-created.")
@@ -271,6 +270,7 @@ class LedgerManager:
                 - "revenue_product_a": For purchase transactions (credit)
                 - "cash_bank": For settlement transactions (debit)
                 - "service_fees_expense": For expense transactions (debit)
+                - "workspace_{workspace_id}_balance": Dynamic workspace balance accounts
         
         Returns:
             Configured LedgerTransactionBuilder instance
@@ -288,6 +288,8 @@ class LedgerManager:
             "revenue_product_a": "internal_revenue",
             "cash_bank": "internal_cash",
             "service_fees_expense": "internal_cost",
+            "internal_cost": "internal_cost",
+            "internal_payable": "internal_payable",
         }
         
         account_ids = {}
@@ -296,6 +298,9 @@ class LedgerManager:
         for account_code in account_codes:
             if account_code in account_mapping:
                 account_ids[account_code] = await self.get_account_id(account_mapping[account_code])
+            elif account_code.startswith("workspace_") and account_code.endswith("_balance"):
+                # Handle dynamic workspace balance accounts
+                account_ids[account_code] = await self.get_account_id(account_code)
             else:
                 raise ValueError(f"Unknown account code: {account_code}. Available codes: {list(account_mapping.keys())}")
         
@@ -304,4 +309,52 @@ class LedgerManager:
     def get_minimum_balance(self) -> Decimal:
         """Get the minimum balance required for operations."""
         return MINIMUM_BALANCE
+
+    def get_markup_for_model(self, provider: str, model: str) -> Decimal:
+        """Get the markup for a model."""
+        return Decimal("0.04")
+    
+    async def process_purchase(self, workspace: Workspace, amount: Decimal, provider: str, model: str, description: str = "API Usage") -> Decimal:
+        """Process a purchase transaction using the transaction builder and return the new balance."""
+
+        markup = self.get_markup_for_model(provider, model)
+        final_amount = amount * (1 + markup)
+
+        #logging.warning(f"Begin processing purchase - amount:{amount} final:{final_amount} model:{model}")
+
+        # Create transaction builder for purchase (debit workspace balance, credit revenue)
+        workspace_balance_code = f"workspace_{workspace.id}_balance"
+        purchase_tx_builder = await self.create_transaction_builder([workspace_balance_code, "revenue_product_a"])
+        
+        # Execute the purchase transaction using the purchase method
+        # The purchase method expects user_id and product_amounts dict
+        purchase_transaction = await purchase_tx_builder.purchase(
+            user_id=workspace.owner_id,
+            product_amounts={"product_a": final_amount},
+            name=f"API Usage - {workspace.id}",
+            description=description,
+            workspace_balance_code=workspace_balance_code
+        )
+        
+        # Create expense transaction builder for the original amount (cost)
+        expense_tx_builder = await self.create_transaction_builder(["internal_cost", "internal_payable"])
+        
+        # Execute the expense transaction for the original amount
+        expense_transaction = await expense_tx_builder.expense(
+            amount=amount,
+            expense_type="api_cost",
+            name=f"API Cost - {workspace.id}",
+            description=f"Cost for {model}",
+            user_id=workspace.owner_id
+        )
+        
+        # Create logical transactions and commit both
+        purchase_logical_tx = LedgerLogicalTransaction(transactions=[purchase_transaction])
+        expense_logical_tx = LedgerLogicalTransaction(transactions=[expense_transaction])
+        await self.sql_ledger_api.create_transactions([purchase_logical_tx, expense_logical_tx])
+
+        # Fetch the updated workspace balance
+        _, new_balance, _ = await self.check_workspace_balance(workspace)
+
+        return new_balance
     

@@ -94,14 +94,18 @@ class LedgerTransactionBuilder:
       details=None
     )
 
-  async def purchase(self, *, user_id, product_amounts: Dict[str, Union[int, float, str, Decimal]], name: Optional[str] = None, description: Optional[str] = None) -> LedgerTransaction:
+  async def purchase(self, *, user_id, product_amounts: Dict[str, Union[int, float, str, Decimal]], name: Optional[str] = None, description: Optional[str] = None, workspace_balance_code: Optional[str] = None) -> LedgerTransaction:
     entries = []
     total = sum(Decimal(str(amt)) for amt in product_amounts.values())
     total_amt = to_micro_units(total)
+    
+    # Use workspace balance code if provided, otherwise default to unearned_revenue
+    balance_account = workspace_balance_code if workspace_balance_code else "unearned_revenue"
+    
     entries.append(
       LedgerJournalEntry(
         id=str(ULID()),
-        account_id=self.account_ids["unearned_revenue"],
+        account_id=self.account_ids[balance_account],
         debit=total_amt,
         credit=0,
         transaction_id=None,
@@ -167,11 +171,10 @@ class LedgerTransactionBuilder:
 
   async def expense(self, *, amount, expense_type: str = "service_fees", name: Optional[str] = None, description: Optional[str] = None, user_id: int = 100) -> LedgerTransaction:
     amt = to_micro_units(amount)
-    code = f"{expense_type.lower()}_expense"
     entries = [
       LedgerJournalEntry(
         id=str(ULID()),
-        account_id=self.account_ids[code],
+        account_id=self.account_ids["internal_cost"],
         debit=amt,
         credit=0,
         transaction_id=None,
@@ -179,11 +182,11 @@ class LedgerTransactionBuilder:
       ),
       LedgerJournalEntry(
         id=str(ULID()),
-        account_id=self.account_ids["cash_bank"],
+        account_id=self.account_ids["internal_payable"],
         debit=0,
         credit=amt,
         transaction_id=None,
-        description="Funds paid to provider"
+        description="Funds owed to provider"
       ),
     ]
     transfers = self._generate_transfers(entries)

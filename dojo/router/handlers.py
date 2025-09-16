@@ -6,6 +6,7 @@ import logging
 import litellm
 import traceback
 from pathlib import Path
+from decimal import Decimal
 from typing import Optional
 from fastapi import Request, HTTPException
 from sqlalchemy import text, select
@@ -66,7 +67,7 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
         )
     
     # Log successful balance check
-    logging.warning(f"Balance check passed for workspace {workspace.id}: ${current_balance:.10f}")
+    #logging.warning(f"Balance check passed for workspace {workspace.id}: ${current_balance:.10f}")
 
     # Store workspace
     user_api_key_dict.org_id = workspace.id
@@ -82,11 +83,12 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
     await session.close()
 
 async def post_call_hook(kwargs, response_obj, start_time, end_time):
+    #logging.warning(f"post_call_hook kwargs: {pprint.pformat(kwargs)}")
     workspace_id = kwargs.get("litellm_params").get("metadata").get("user_api_key_org_id")
-    model = kwargs.get("model")
-    response_cost = litellm.completion_cost(completion_response=response_obj)
-
-    logging.warning(f"Post-call Success - workspace:{workspace_id} model:{model} cost:{response_cost:.10f} tokens:{response_obj.usage.total_tokens} (in: {response_obj.usage.prompt_tokens}, out: {response_obj.usage.completion_tokens}, cached: {response_obj.usage.prompt_tokens_details.cached_tokens})")
+    provider = kwargs.get("custom_llm_provider")
+    provider_model = kwargs.get("model")
+    model_requested = kwargs.get("litellm_params").get("proxy_server_request").get("body").get("model")
+    response_cost = Decimal(litellm.completion_cost(completion_response=response_obj)).quantize(Decimal('0.0000000001'))
 
     dburl = os.environ['DATABASE_ASYNC_URL']
     async_engine = create_async_engine(dburl)
@@ -95,4 +97,14 @@ async def post_call_hook(kwargs, response_obj, start_time, end_time):
     async with async_session() as session:
         ledger_manager = LedgerManager(session)
         
- 
+        # Get workspace for the transaction
+        stmt = select(Workspace).where(Workspace.id == workspace_id)
+        result = await session.execute(stmt)
+        workspace = result.scalar_one_or_none()
+        
+        # Process the purchase transaction
+        new_balance = await ledger_manager.process_purchase(workspace, response_cost, provider, provider_model, f"API Usage - {model_requested}")
+        await session.commit()
+        await session.close()
+        new_balance = new_balance.quantize(Decimal('0.0000000001'))
+        logging.warning(f"Success - workspace:{workspace_id} model:{model_requested} cost:{response_cost} balance:{new_balance} tokens:{response_obj.usage.total_tokens} (in: {response_obj.usage.prompt_tokens}, out: {response_obj.usage.completion_tokens}, cached: {response_obj.usage.prompt_tokens_details.cached_tokens})")
