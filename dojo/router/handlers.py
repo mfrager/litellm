@@ -35,7 +35,7 @@ async def auth_hook(request: Request, api_key: str) -> UserAPIKeyAuth:
         token = result.scalar_one_or_none()
 
         if token is None:
-            session.close()
+            await session.close()
             raise HTTPException(status_code=401, detail="Unauthorized")
         
         request.state.dojo_token = token
@@ -45,7 +45,7 @@ async def auth_hook(request: Request, api_key: str) -> UserAPIKeyAuth:
             api_key=api_key,
         )
 
-async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, data: dict, call_type: str, request: Optional[Request]):
+async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, data: dict, call_type: str, request: Request):
     session = request.state.dojo_db_session
     token = request.state.dojo_token
     

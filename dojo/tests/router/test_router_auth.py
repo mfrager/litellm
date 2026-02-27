@@ -159,8 +159,7 @@ def test_create_token(session):
     print(f"   Token ID: {token.id}")
     print(f"   Token: {token.token[:20]}...{token.token[-20:]}")  # Show first/last 20 chars
     print(f"   Workspace ID: {token.workspace_id}")
-    
-    return token
+
 
 def test_database_queries(session):
     """Test database queries to verify data persistence."""
