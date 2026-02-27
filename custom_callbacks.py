@@ -13,11 +13,13 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from litellm.proxy.proxy_server import UserAPIKeyAuth, DualCache
 from litellm.integrations.custom_logger import CustomLogger
 
-dojo_path = Path(__file__).resolve().parent / "dojo"
-sys.path.insert(0, str(dojo_path))
+# Add project root so "dojo" package can be imported (same as in dojo tests)
+_project_root = Path(__file__).resolve().parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 
-from ledger.sql_ledger import SQLLedgerAPI
-from router.handlers import pre_call_hook, post_call_hook
+from dojo.ledger.sql_ledger import SQLLedgerAPI
+from dojo.router.handlers import pre_call_hook, post_call_hook
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:\t%(message)s")
 

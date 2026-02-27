@@ -1,19 +1,17 @@
 import os
 import sys
-import pprint
-import inspect
 import logging
 import litellm
-import traceback
+from ulid import ULID
 from pathlib import Path
 from decimal import Decimal
-from typing import Optional
+#from typing import Optional
 from fastapi import Request, HTTPException
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.proxy_server import DualCache
-from litellm.integrations.custom_logger import CustomLogger
+#from litellm.integrations.custom_logger import CustomLogger
 
 dojo_path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(dojo_path))
@@ -82,13 +80,26 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
     # Close session connection
     await session.close()
 
+# Default cost when model is not in LiteLLM's model_prices_and_context_window.json
+DEFAULT_UNMAPPED_MODEL_COST = Decimal("0.0001")
+
 async def post_call_hook(kwargs, response_obj, start_time, end_time):
     #logging.warning(f"post_call_hook kwargs: {pprint.pformat(kwargs)}")
     workspace_id = kwargs.get("litellm_params").get("metadata").get("user_api_key_org_id")
     provider = kwargs.get("custom_llm_provider")
     provider_model = kwargs.get("model")
     model_requested = kwargs.get("litellm_params").get("proxy_server_request").get("body").get("model")
-    response_cost = Decimal(litellm.completion_cost(completion_response=response_obj)).quantize(Decimal('0.0000000001'))
+    try:
+        response_cost = Decimal(litellm.completion_cost(completion_response=response_obj)).quantize(Decimal('0.0000000001'))
+    except Exception as e:
+        # TODO: Expand price list
+        #logging.warning(
+        #    "Model not in LiteLLM price list, using default cost=0: model=%s provider=%s error=%s",
+        #    provider_model or model_requested,
+        #    provider,
+        #    e,
+        #)
+        response_cost = DEFAULT_UNMAPPED_MODEL_COST
 
     dburl = os.environ['DATABASE_ASYNC_URL']
     async_engine = create_async_engine(dburl)
@@ -107,4 +118,14 @@ async def post_call_hook(kwargs, response_obj, start_time, end_time):
         await session.commit()
         await session.close()
         new_balance = new_balance.quantize(Decimal('0.0000000001'))
-        logging.warning(f"Success - workspace:{workspace_id} model:{model_requested} cost:{response_cost} balance:{new_balance} tokens:{response_obj.usage.total_tokens} (in: {response_obj.usage.prompt_tokens}, out: {response_obj.usage.completion_tokens}, cached: {response_obj.usage.prompt_tokens_details.cached_tokens})")
+        usage = getattr(response_obj, "usage", None)
+        total_tokens = getattr(usage, "total_tokens", None) if usage else None
+        prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+        completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+        details = getattr(usage, "prompt_tokens_details", None) if usage else None
+        cached_tokens = getattr(details, "cached_tokens", None) if details else None
+        logging.warning(
+            "Success - workspace:%s model:%s cost:%s balance:%s tokens:%s (in: %s, out: %s, cached: %s)",
+            str(ULID(bytes(workspace_id))), model_requested, response_cost, new_balance,
+            total_tokens, prompt_tokens, completion_tokens, cached_tokens,
+        )

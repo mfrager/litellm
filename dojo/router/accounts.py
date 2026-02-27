@@ -10,7 +10,7 @@ import os
 import sys
 import json
 import logging
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Union, Any, cast
 from decimal import Decimal
 from ulid import ULID
 from dojo.models.functions import generate_ulid
@@ -90,23 +90,22 @@ class LedgerManager:
                 sql_account = result.scalar_one_or_none()
                 
                 if sql_account:
-                    # Convert SQLAccount to LedgerAccount
+                    # Convert SQLAccount to LedgerAccount (only fields present on LedgerAccount)
+                    _details = getattr(sql_account, "details", None)
+                    details = json.loads(_details) if isinstance(_details, str) else {}
                     ledger_account = LedgerAccount(
-                        id=sql_account.id,
-                        name=sql_account.name,
-                        account_code=sql_account.account_code,
-                        account_type=AccountType(sql_account.account_type),
-                        side=LedgerSide(sql_account.side),
-                        workspace_id=sql_account.workspace_id,
-                        is_promo=sql_account.is_promo,
-                        decimals=sql_account.decimals,
-                        currency=sql_account.currency,
-                        details=json.loads(sql_account.details) if sql_account.details else {},
-                        history=sql_account.history,
-                        balance=sql_account.balance,
-                        last_tx=sql_account.last_tx,
-                        ts_created=sql_account.ts_created,
-                        ts_updated=sql_account.ts_updated
+                        id=cast(Union[int, str, bytes], sql_account.id),
+                        name=cast(str, sql_account.name),
+                        account_code=cast(str, sql_account.account_code),
+                        account_type=AccountType(cast(str, sql_account.account_type)),
+                        side=LedgerSide(cast(str, sql_account.side)),
+                        workspace_id=cast(Optional[Union[int, str, bytes]], sql_account.workspace_id),
+                        is_promo=cast(bool, sql_account.is_promo),
+                        decimals=cast(int, sql_account.decimals),
+                        currency=cast(str, sql_account.currency),
+                        details=details,
+                        history=cast(bool, sql_account.history),
+                        allow_negative=True,
                     )
                     self.internal_accounts[account_code] = ledger_account
                 else:
@@ -114,7 +113,7 @@ class LedgerManager:
             finally:
                 await self.sql_ledger_api.end_transaction()
         
-        return self.internal_accounts[account_code].id
+        return _id_str(self.internal_accounts[account_code].id)
     
     
     async def get_workspace_balance_account(self, workspace: Workspace) -> Optional[LedgerAccount]:
@@ -143,23 +142,22 @@ class LedgerManager:
             #logging.warning(f"sql_account: {sql_account}")
             
             if sql_account:
-                # Convert SQLAccount to LedgerAccount
+                # Convert SQLAccount to LedgerAccount (only fields present on LedgerAccount)
+                _details = getattr(sql_account, "details", None)
+                details = json.loads(_details) if isinstance(_details, str) else {}
                 ledger_account = LedgerAccount(
-                    id=sql_account.id,
-                    name=sql_account.name,
-                    account_code=sql_account.account_code,
-                    account_type=AccountType(sql_account.account_type),
-                    side=LedgerSide(sql_account.side),
-                    workspace_id=sql_account.workspace_id,
-                    is_promo=sql_account.is_promo,
-                    decimals=sql_account.decimals,
-                    currency=sql_account.currency,
-                    details=json.loads(sql_account.details) if sql_account.details else {},
-                    history=sql_account.history,
-                    balance=sql_account.balance,
-                    last_tx=sql_account.last_tx,
-                    ts_created=sql_account.ts_created,
-                    ts_updated=sql_account.ts_updated
+                    id=cast(Union[int, str, bytes], sql_account.id),
+                    name=cast(str, sql_account.name),
+                    account_code=cast(str, sql_account.account_code),
+                    account_type=AccountType(cast(str, sql_account.account_type)),
+                    side=LedgerSide(cast(str, sql_account.side)),
+                    workspace_id=cast(Optional[Union[int, str, bytes]], sql_account.workspace_id),
+                    is_promo=cast(bool, sql_account.is_promo),
+                    decimals=cast(int, sql_account.decimals),
+                    currency=cast(str, sql_account.currency),
+                    details=details,
+                    history=cast(bool, sql_account.history),
+                    allow_negative=True,
                 )
                 return ledger_account
             
@@ -242,7 +240,8 @@ class LedgerManager:
             decimals=DECIMALS,
             currency="USD",
             details={},
-            history=True
+            history=True,
+            allow_negative=True,
         )
         
         # Create the account
@@ -288,7 +287,8 @@ class LedgerManager:
                 decimals=DECIMALS,
                 currency="USD",
                 details={"provider": account_code},
-                history=True
+                history=True,
+                allow_negative=True,
             )
         else:
             raise ValueError(f"Unsupported account type: {account_type}")
@@ -302,7 +302,7 @@ class LedgerManager:
         finally:
             await self.sql_ledger_api.end_transaction()
         
-        return provider_account.id
+        return _id_str(provider_account.id)
     
     async def create_transaction_builder(
         self, 
@@ -395,13 +395,14 @@ class LedgerManager:
         # Create expense transaction builder for the original amount (cost)
         expense_tx_builder = await self.create_transaction_builder(["internal_cost", provider_payable_code])
         
-        # Execute the expense transaction for the original amount
+        # Execute the expense transaction for the original amount (user_id must be int for ledger)
+        expense_user_id = hash(workspace.owner_id) if workspace.owner_id is not None else 0
         expense_transaction = await expense_tx_builder.expense(
             amount=amount,
             expense_type="api_cost",
             name=f"API Cost - {_id_str(workspace.id)}",
             description=f"Cost for {model}",
-            user_id=workspace.owner_id
+            user_id=expense_user_id,
         )
         
         # Create logical transactions and commit both
