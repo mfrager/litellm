@@ -28,54 +28,54 @@ class TransactionType(Enum):
     CANCEL_PROMO = "CANCEL_PROMO"
 
 class LedgerAccount(BaseModel):
-    id: Union[int, str] = Field(..., description="Account ID")
+    id: Union[int, str, bytes] = Field(..., description="Account ID")
     name: str = Field(..., description="Account name")
     account_code: str = Field(..., description="Unique account code")
     account_type: AccountType = Field(..., description="Account type")
     side: LedgerSide = Field(..., description="Account Side")
-    workspace_id: Optional[Union[int, str]] = Field(None, description="Account Workspace ID")
+    workspace_id: Optional[Union[int, str, bytes]] = Field(default=None, description="Account Workspace ID")
     is_promo: bool = Field(False, description="Promo")
     decimals: int = Field(10, description="Decimals")
     currency: str = Field("USD", description="Currency")
-    details: Optional[dict] = Field(..., description="Account details")
+    details: Optional[dict] = Field(default=None, description="Account details")
     history: bool = Field(True, description="Account history")
     allow_negative: bool = Field(True, description="Allow a negative balance")
-    external_id: Optional[Union[int, str]] = Field(None, description="External ID")
+    external_id: Optional[Union[int, str]] = Field(default=None, description="External ID")
 
 class LedgerAccountBalance(BaseModel):
-    account_id: Union[int, str] = Field(..., description="Account ID")
+    account_id: Union[int, str, bytes] = Field(..., description="Account ID")
     balance: int = Field(..., description="Balance")
-    ts_created: Optional[datetime] = Field(..., description="Balance timestamp")
-    last_transaction_id: Optional[Union[int, str]] = Field(..., description="Last transaction ID")
+    ts_created: Optional[datetime] = Field(default=None, description="Balance timestamp")
+    last_transaction_id: Optional[Union[int, str, bytes]] = Field(default=None, description="Last transaction ID")
 
 class LedgerAccountTransfer(BaseModel):
-    id: Union[int, str] = Field(..., description="Transfer ID")
-    debit_account_id: Union[int, str] = Field(..., description="Debit account ID")
-    credit_account_id: Union[int, str] = Field(..., description="Credit account ID")
+    id: Union[int, str, bytes] = Field(..., description="Transfer ID")
+    debit_account_id: Union[int, str, bytes] = Field(..., description="Debit account ID")
+    credit_account_id: Union[int, str, bytes] = Field(..., description="Credit account ID")
     amount: int = Field(..., description="Transfer amount")
-    ts_created: Optional[datetime] = Field(None, description="Transfer timestamp")
-    transaction_id: Optional[Union[int, str]] = Field(..., description="Transaction ID")
-    balance: Optional[LedgerAccountBalance] = Field(None, description="Associated account balance after this transfer")
+    ts_created: Optional[datetime] = Field(default=None, description="Transfer timestamp")
+    transaction_id: Optional[Union[int, str, bytes]] = Field(default=None, description="Transaction ID")
+    balance: Optional[LedgerAccountBalance] = Field(default=None, description="Associated account balance after this transfer")
 
 class LedgerJournalEntry(BaseModel):
-    id: Union[int, str] = Field(..., description="Journal entry ID")
-    account_id: Union[int, str] = Field(..., description="Account ID")
-    debit: Optional[int] = Field(..., description="Debit amount")
-    credit: Optional[int] = Field(..., description="Credit amount")
-    ts_created: Optional[datetime] = Field(None, description="Journal entry timestamp")
-    transaction_id: Optional[Union[int, str]] = Field(..., description="Transaction ID")
-    description: Optional[str] = Field(..., description="Journal entry description")
+    id: Union[int, str, bytes] = Field(..., description="Journal entry ID")
+    account_id: Union[int, str, bytes] = Field(..., description="Account ID")
+    debit: Optional[int] = Field(default=None, description="Debit amount")
+    credit: Optional[int] = Field(default=None, description="Credit amount")
+    ts_created: Optional[datetime] = Field(default=None, description="Journal entry timestamp")
+    transaction_id: Optional[Union[int, str, bytes]] = Field(default=None, description="Transaction ID")
+    description: Optional[str] = Field(default=None, description="Journal entry description")
 
 class LedgerTransaction(BaseModel):
-    id: Union[int, str] = Field(..., description="Transaction ID")
+    id: Union[int, str, bytes] = Field(..., description="Transaction ID")
     transaction_type: TransactionType = Field(..., description="Transaction type")
-    entries: Optional[List[LedgerJournalEntry]] = Field(..., description="Journal entries")
+    entries: Optional[List[LedgerJournalEntry]] = Field(default=None, description="Journal entries")
     transfers: List[LedgerAccountTransfer] = Field(..., description="Transfers")
-    ts_created: Optional[datetime] = Field(None, description="Transaction timestamp")
-    user_id: Optional[Union[int, str]] = Field(..., description="User ID")
-    reference: Optional[str] = Field(..., description="Transaction reference")
-    description: Optional[str] = Field(..., description="Transaction description")
-    details: Optional[dict] = Field(..., description="Transaction details")
+    ts_created: Optional[datetime] = Field(default=None, description="Transaction timestamp")
+    user_id: Optional[Union[int, str, bytes]] = Field(default=None, description="User ID")
+    reference: Optional[str] = Field(default=None, description="Transaction reference")
+    description: Optional[str] = Field(default=None, description="Transaction description")
+    details: Optional[dict] = Field(default=None, description="Transaction details")
 
 class LedgerAccountTransaction(BaseModel):
     accounts: List[LedgerAccount] = Field(..., description="Accounts")
@@ -94,11 +94,11 @@ class Ledger(BaseModel):
     accounts: List[LedgerAccount] = Field(..., description="Accounts")
     has_journal: bool = Field(True, description="Has journal")
     has_transactions: bool = Field(True, description="Has transactions")
-    config: Optional[dict] = Field(..., description="Config")
+    config: Optional[dict] = Field(default=None, description="Config")
 
 class LedgerAccountFilter(TypedDict, total=False):
-    account_id: Optional[Union[int, str]]
-    transaction_id: Optional[Union[int, str]]
+    account_id: Optional[Union[int, str, bytes]]
+    transaction_id: Optional[Union[int, str, bytes]]
     timestamp_min: Optional[datetime]
     timestamp_max: Optional[datetime]
     limit: Optional[int]
@@ -106,16 +106,20 @@ class LedgerAccountFilter(TypedDict, total=False):
     data_param: Optional[dict]
 
 class LedgerQuery(TypedDict, total=False):
-    account_id: Optional[Union[int, str]]
-    transfer_id: Optional[Union[int, str]]
-    transaction_id: Optional[Union[int, str]]
-    entry_id: Optional[Union[int, str]]
+    account_id: Optional[Union[int, str, bytes]]
+    transfer_id: Optional[Union[int, str, bytes]]
+    transaction_id: Optional[Union[int, str, bytes]]
+    entry_id: Optional[Union[int, str, bytes]]
     transaction_type: Optional[TransactionType]
     timestamp_min: Optional[datetime]
     timestamp_max: Optional[datetime]
     limit: Optional[int]
     offset: Optional[int]
     data_param: Optional[dict]
+    workspace_id: Optional[Union[int, str, bytes]]
+    name: Optional[str]
+    account_code: Optional[str]
+    user_id: Optional[Union[int, str, bytes]]
 
 class LedgerAPI(ABC):
     def __init__(self, ledger: Ledger):
@@ -145,34 +149,34 @@ class LedgerAPI(ABC):
         pass
 
     @abstractmethod
-    async def lookup_accounts(self, account_ids: List[Union[int, str]]) -> List[LedgerAccount]:
+    async def lookup_accounts(self, account_ids: List[Union[int, str, bytes]]) -> List[LedgerAccount]:
         """
         Fetch accounts by ID:
-        - account_ids: List[Union[int, str]]
+        - account_ids: List[Union[int, str, bytes]]
         """
         pass
 
     @abstractmethod
-    async def lookup_transfers(self, transfer_ids: List[Union[int, str]]) -> List[LedgerAccountTransfer]:
+    async def lookup_transfers(self, transfer_ids: List[Union[int, str, bytes]]) -> List[LedgerAccountTransfer]:
         """
         Fetch transfers by ID:
-        - transfer_ids: List[Union[int, str]]
+        - transfer_ids: List[Union[int, str, bytes]]
         """
         pass
 
     @abstractmethod
-    async def lookup_transactions(self, transaction_ids: List[Union[int, str]], journal: bool = True, transfers: bool = True) -> List[LedgerTransaction]:
+    async def lookup_transactions(self, transaction_ids: List[Union[int, str, bytes]], journal: bool = True, transfers: bool = True) -> List[LedgerTransaction]:
         """
         Fetch transactions by ID:
-        - transaction_ids: List[Union[int, str]]
+        - transaction_ids: List[Union[int, str, bytes]]
         """
         pass
 
     @abstractmethod
-    async def lookup_entries(self, entry_ids: List[Union[int, str]]) -> List[LedgerJournalEntry]:
+    async def lookup_entries(self, entry_ids: List[Union[int, str, bytes]]) -> List[LedgerJournalEntry]:
         """
         Fetch journal entries by ID:
-        - entry_ids: List[Union[int, str]]
+        - entry_ids: List[Union[int, str, bytes]]
         """
         pass
 

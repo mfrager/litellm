@@ -9,17 +9,20 @@ import string
 import secrets
 import asyncio
 import sqlite3
-from ulid import ULID
+import pytest
 from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-sys.path.append('../..')
+# Add project root so "dojo" package can be imported
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
 
-# Import the actual models
-from models.router_model import User, Workspace, Token, Base
+from dojo.models.router_model import User, Workspace, Token, Base
+from dojo.models.functions import generate_ulid
 
-# Database-enabled RouterAuth
+# Database-enabled RouterAuth (sync version for tests)
 class RouterAuth:
     """Simple authentication class for creating users associated with workspaces."""
     
@@ -31,8 +34,8 @@ class RouterAuth:
                    is_active: bool = True, last_login = None) -> tuple[User, Workspace]:
         """Create a new user instance with an associated workspace."""
         
-        user_id = str(ULID())
-        workspace_id = str(ULID())
+        user_id = generate_ulid()
+        workspace_id = generate_ulid()
         
         workspace = Workspace(
             id=workspace_id,
@@ -59,15 +62,13 @@ class RouterAuth:
         
         return user, workspace
     
-    def create_token(self, user_id: str) -> Token:
-        """Create a new token instance for a user."""
-        
+    def create_token(self, workspace_id) -> Token:
+        """Create a new token instance for a workspace."""
         alphabet = string.ascii_letters  # A-Za-z
         token = ''.join(secrets.choice(alphabet) for _ in range(64))
-        
         token_obj = Token(
-            id=str(ULID()),
-            user_id=user_id,
+            id=generate_ulid(),
+            workspace_id=workspace_id,
             token=token
         )
         
@@ -91,6 +92,11 @@ def setup_database():
     
     return session
 
+@pytest.fixture(scope="module")
+def session():
+    """Pytest fixture providing a shared SQLite session for all tests in this module."""
+    return setup_database()
+
 def test_create_user(session):
     """Test user and workspace creation."""
     print("🧪 Testing RouterAuth.create_user()...")
@@ -107,11 +113,11 @@ def test_create_user(session):
     assert user.first_name == "Test"
     assert user.last_name == "User"
     assert user.workspace_id == workspace.id
-    assert len(user.id) == 26  # ULID length
+    assert len(user.id) == 16  # binary ULID length
     
     # Verify workspace creation
     assert workspace.owner_id == user.id
-    assert len(workspace.id) == 26  # ULID length
+    assert len(workspace.id) == 16  # binary ULID length
     
     # Verify data was saved to database
     db_user = session.query(User).filter_by(id=user.id).first()
@@ -126,8 +132,7 @@ def test_create_user(session):
     print(f"   User ID: {user.id}")
     print(f"   Workspace ID: {workspace.id}")
     print(f"   Email: {user.email}")
-    
-    return user, workspace
+
 
 def test_create_token(session):
     """Test token creation."""
@@ -136,24 +141,24 @@ def test_create_token(session):
     auth = RouterAuth(session)
     user, workspace = auth.create_user(email="token@example.com")
     
-    token = auth.create_token(user_id=user.id)
+    token = auth.create_token(workspace_id=workspace.id)
     
     # Verify token creation
-    assert token.user_id == user.id
+    assert token.workspace_id == workspace.id
     assert len(token.token) == 64  # Exactly 64 characters
     assert token.token.isalpha()  # Only A-Za-z characters
-    assert len(token.id) == 26  # ULID length
+    assert len(token.id) == 16  # binary ULID length
     
     # Verify data was saved to database
     db_token = session.query(Token).filter_by(id=token.id).first()
     assert db_token is not None
     assert db_token.token == token.token
-    assert db_token.user_id == user.id
+    assert db_token.workspace_id == workspace.id
     
     print("✅ Token created successfully")
     print(f"   Token ID: {token.id}")
     print(f"   Token: {token.token[:20]}...{token.token[-20:]}")  # Show first/last 20 chars
-    print(f"   User ID: {token.user_id}")
+    print(f"   Workspace ID: {token.workspace_id}")
     
     return token
 

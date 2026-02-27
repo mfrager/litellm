@@ -9,20 +9,25 @@ import pytest
 import pytest_asyncio
 from ulid import ULID
 from datetime import datetime
+from dojo.models.functions import generate_ulid
 from decimal import Decimal
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
 from tabulate import tabulate
 
-load_dotenv('../../../.env')
-sys.path.append('../..')
+# Add project root so "dojo" package can be imported
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+load_dotenv(os.path.join(_root, '.env'))
 
-# Import the actual models
-from models.router_model import User, Workspace, Token, Base
-from models.ledger_model import SQLAccount, Base as LedgerBase
-from ledger.ledger_api import LedgerAccount, AccountType, LedgerSide, generate_account_code
-from ledger.sql_ledger import SQLLedgerAPI
+from dojo.models.router_model import User, Workspace, Token, Base
+from dojo.models.ledger_model import SQLAccount, Base as LedgerBase
+from dojo.ledger.ledger_api import LedgerAccount, AccountType, LedgerSide, generate_account_code
+from dojo.ledger.sql_ledger import SQLLedgerAPI
 
 # Decimal precision for monetary calculations
 DECIMALS = 10  # 10 decimal places for high precision
@@ -113,7 +118,7 @@ class LedgerManager:
         else:
             # Create new account
             new_account = LedgerAccount(
-                id=str(ULID()),
+                id=generate_ulid(),
                 name=account_def["name"],
                 account_code=account_code,
                 account_type=account_def["account_type"],
@@ -131,7 +136,7 @@ class LedgerManager:
             )
             
             # Create the account
-            from ledger.ledger_api import LedgerAccountTransaction
+            from dojo.ledger.ledger_api import LedgerAccountTransaction
             await self.sql_ledger_api.create_accounts([
                 LedgerAccountTransaction(accounts=[new_account])
             ])
@@ -171,7 +176,7 @@ class LedgerManager:
                     account.name,
                     account.side.value.title(),
                     account.decimals,
-                    account.details.get("description", "N/A")
+                    (account.details or {}).get("description", "N/A")
                 ])
             
             headers = ['Account Code', 'Account Name', 'Normal Side', 'Decimals', 'Description']
@@ -267,9 +272,16 @@ class LedgerManager:
 @pytest_asyncio.fixture(scope="session")
 async def database_setup():
     """Set up MySQL database and return session with ledger API."""
-    # Get MySQL database URL from environment
-    database_url = os.environ['DATABASE_ASYNC_TEST']
-    
+    database_url = os.environ.get('DATABASE_ASYNC_TEST')
+    if not database_url or 'mysql' not in database_url:
+        pytest.skip("DATABASE_ASYNC_TEST (MySQL) not set or not MySQL")
+    try:
+        check_engine = create_async_engine(database_url, echo=False)
+        async with check_engine.begin() as conn:
+            await conn.execute(text("SELECT 1"))
+        await check_engine.dispose()
+    except OperationalError as e:
+        pytest.skip(f"MySQL server not reachable: {e}")
     # Convert async URL to sync URL for SQLAlchemy session
     sync_url = database_url.replace('mysql+aiomysql://', 'mysql+pymysql://')
     
@@ -281,13 +293,13 @@ async def database_setup():
     session = Session()
     
     # Create Ledger configuration
-    from ledger.ledger_api import Ledger
+    from dojo.ledger.ledger_api import Ledger
     ledger_config = Ledger(
         id=1,
         accounts=[],
         has_journal=True,
         has_transactions=True,
-        config={"currency": "USD", "decimals": DECIMALS}
+        config={"currency": "USD", "decimals": DECIMALS, "balance_via_trigger": True}
     )
     
     # Create SQL Ledger API

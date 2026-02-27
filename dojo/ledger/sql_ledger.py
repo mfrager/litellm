@@ -8,14 +8,15 @@ for storing accounting data in a relational database.
 import json
 from ulid import ULID
 from decimal import Decimal
+from dojo.models.functions import generate_ulid
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, text, select
+from sqlalchemy import create_engine, text, select, update
 from sqlalchemy.orm import Session, sessionmaker, selectinload
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Union, Dict, Any
 
-from models.ledger_model import (
+from dojo.models.ledger_model import (
   SQLAccount,
   SQLAccountBalance,
   SQLAccountTransaction,
@@ -23,6 +24,23 @@ from models.ledger_model import (
   SQLTransaction,
   Base,
 )
+
+def _ulid_bytes(val):
+  """Normalize ID to 16-byte ULID bytes. Accepts bytes or str (Crockford base32)."""
+  if val is None:
+    return None
+  if isinstance(val, bytes):
+    return val
+  if isinstance(val, str):
+    return ULID.from_str(val).bytes
+  return None
+
+class _BytesEncoder(json.JSONEncoder):
+  """JSON encoder that converts bytes to their hex representation."""
+  def default(self, o):
+    if isinstance(o, bytes):
+      return o.hex()
+    return super().default(o)
 
 from .ledger_api import (
   LedgerAPI, 
@@ -101,6 +119,7 @@ class SQLLedgerAPI(LedgerAPI):
         raise RuntimeError("Transaction already active")
       
       # Create new session and begin transaction
+      assert self.SessionLocal is not None
       self._session = self.SessionLocal()
       await self._session.begin()
   
@@ -142,22 +161,21 @@ class SQLLedgerAPI(LedgerAPI):
     
     for account_tx in account_list:
       for account in account_tx.accounts:
-        # Convert string ID to ULID string, or generate new ULID if needed
-        account_id = str(account.id) if account.id else str(ULID())
-        
-        sql_account = SQLAccount(
-          id=account_id,
-          name=account.name,
-          account_code=account.account_code,
-          account_type=account.account_type.value,
-          side=account.side.value,
-          workspace_id=account.workspace_id,
-          is_promo=account.is_promo,
-          decimals=account.decimals,
-          currency=account.currency,
-          details=json.dumps(account.details) if account.details else None,
-          history=account.history,
-          balance=0
+        account_id = _ulid_bytes(account.id) if account.id else generate_ulid()
+        workspace_id = _ulid_bytes(account.workspace_id) if account.workspace_id else None
+        sql_account = SQLAccount(  # type: ignore[call-arg]
+          id=account_id,  # type: ignore[call-arg]
+          name=account.name,  # type: ignore[call-arg]
+          account_code=account.account_code,  # type: ignore[call-arg]
+          account_type=account.account_type.value,  # type: ignore[call-arg]
+          side=account.side.value,  # type: ignore[call-arg]
+          workspace_id=workspace_id,  # type: ignore[call-arg]
+          is_promo=account.is_promo,  # type: ignore[call-arg]
+          decimals=account.decimals,  # type: ignore[call-arg]
+          currency=account.currency,  # type: ignore[call-arg]
+          details=json.dumps(account.details) if account.details else None,  # type: ignore[call-arg]
+          history=account.history,  # type: ignore[call-arg]
+          balance=0  # type: ignore[call-arg]
         )
         
         try:
@@ -168,7 +186,7 @@ class SQLLedgerAPI(LedgerAPI):
           if "Duplicate entry" in str(e) and "PRIMARY" in str(e):
             # Account already exists, continue without error
             await session.rollback()
-            print(f"Account {account_id} already exists, skipping creation")
+            print(f"Account {account_id!r} already exists, skipping creation")
             continue
           else:
             # Re-raise other integrity errors
@@ -180,11 +198,9 @@ class SQLLedgerAPI(LedgerAPI):
     
     for entry_tx in entry_list:
       for entry in entry_tx.entries:
-        # Convert string IDs to ULID strings
-        entry_id = str(entry.id) if entry.id else str(ULID())
-        
-        account_id = entry.account_id
-        transaction_id = str(entry.transaction_id) if entry.transaction_id else None
+        entry_id = _ulid_bytes(entry.id) if entry.id else generate_ulid()
+        account_id = _ulid_bytes(entry.account_id) if entry.account_id else None
+        transaction_id = _ulid_bytes(entry.transaction_id) if entry.transaction_id else None
         
         sql_entry = SQLJournalEntry(
           id=entry_id,
@@ -205,15 +221,12 @@ class SQLLedgerAPI(LedgerAPI):
     
     for transfer_tx in transfer_list:
       for transfer in transfer_tx.transfers:
-        # Convert string IDs to ULID strings
-        transfer_id = str(transfer.id) if transfer.id else str(ULID())
-        
-        debit_account_id = transfer.debit_account_id
-        credit_account_id = transfer.credit_account_id
-        transaction_id = str(transfer.transaction_id) if transfer.transaction_id else None
+        transfer_id = _ulid_bytes(transfer.id) if transfer.id else generate_ulid()
+        debit_account_id = _ulid_bytes(transfer.debit_account_id) if transfer.debit_account_id else None
+        credit_account_id = _ulid_bytes(transfer.credit_account_id) if transfer.credit_account_id else None
+        transaction_id = _ulid_bytes(transfer.transaction_id) if transfer.transaction_id else None
 
-        # Create the account transaction (triggers will update balances)
-        account_tx_id = str(ULID())
+        account_tx_id = generate_ulid()
         account_tx = SQLAccountTransaction(
           id=account_tx_id,
           src_id=credit_account_id,  # Source is credit account
@@ -221,9 +234,24 @@ class SQLLedgerAPI(LedgerAPI):
           amount=transfer.amount,
           ts_created=transfer.ts_created or datetime.now(timezone.utc),
           transaction_id=transaction_id,
-          description=f"Transfer {transfer_id}"
+          description=f"Transfer {transfer_id!r}"
         )
         session.add(account_tx)
+        # Application-level balance update only when DB does not use triggers (e.g. SQLite).
+        # When balance_via_trigger is True (e.g. MySQL with mysql_triggers.sql), the DB trigger updates balance.
+        if not (self.ledger.config or {}).get("balance_via_trigger"):
+          if debit_account_id is not None:
+            await session.execute(
+              update(SQLAccount)
+              .where(SQLAccount.id == debit_account_id)
+              .values(balance=SQLAccount.balance + transfer.amount)
+            )
+          if credit_account_id is not None:
+            await session.execute(
+              update(SQLAccount)
+              .where(SQLAccount.id == credit_account_id)
+              .values(balance=SQLAccount.balance - transfer.amount)
+            )
     
     await session.flush()
 
@@ -232,19 +260,20 @@ class SQLLedgerAPI(LedgerAPI):
     session = self.get_session()
     for logical_tx in tx_list:
       for tx in logical_tx.transactions:
-        sql_tx_id = str(ULID())
+        sql_tx_id = generate_ulid()
+        user_id = _ulid_bytes(tx.user_id) if tx.user_id else None
         sql_tx = SQLTransaction(
           id=sql_tx_id,
           transaction_type=tx.transaction_type.value,
-          user_id=tx.user_id,
+          user_id=user_id,
           reference=tx.reference,
           description=tx.description,
-          details=json.dumps(tx.details) if tx.details else None,
+          details=json.dumps(tx.details, cls=_BytesEncoder) if tx.details else None,
           ts_created=tx.ts_created or datetime.now(timezone.utc)  
         )
         session.add(sql_tx)
         await session.flush()
-        if self.ledger.has_journal:
+        if self.ledger.has_journal and tx.entries:
           for entry in tx.entries:
             entry.transaction_id = sql_tx_id
           await self.create_journal_entries([LedgerJournalTransaction(entries=tx.entries)])
@@ -252,25 +281,23 @@ class SQLLedgerAPI(LedgerAPI):
           transfer.transaction_id = sql_tx_id
         await self.create_transfers([LedgerTransferTransaction(transfers=tx.transfers)])
 
-  async def lookup_accounts(self, account_ids: List[Union[int, str]]) -> List[LedgerAccount]:
+  async def lookup_accounts(self, account_ids: List[Union[int, str, bytes]]) -> List[LedgerAccount]:
     """Fetch accounts by ID."""
     session = self.get_session()
-    
-    # Convert all IDs to string format
-    ids = [str(aid) for aid in account_ids]
-    
+    ids = [b for aid in account_ids if (b := _ulid_bytes(aid)) is not None]
+    if not ids:
+      return []
     result = await session.execute(select(SQLAccount).filter(SQLAccount.id.in_(ids)))
     sql_accounts = result.scalars().all()
     
     return [self._convert_sql_account_to_ledger_account(acc) for acc in sql_accounts]
   
-  async def lookup_transfers(self, transfer_ids: List[Union[int, str]], with_balance: bool = True) -> List[LedgerAccountTransfer]:
+  async def lookup_transfers(self, transfer_ids: List[Union[int, str, bytes]], with_balance: bool = True) -> List[LedgerAccountTransfer]:
     """Fetch transfers by ID."""
     session = self.get_session()
-    
-    # Convert all IDs to string format
-    ids = [str(tid) for tid in transfer_ids]
-    
+    ids = [b for tid in transfer_ids if (b := _ulid_bytes(tid)) is not None]
+    if not ids:
+      return []
     result = await session.execute(select(SQLAccountTransaction).filter(SQLAccountTransaction.id.in_(ids)))
     sql_transfers = result.scalars().all()
     
@@ -280,27 +307,27 @@ class SQLLedgerAPI(LedgerAPI):
       transfers.append(converted_transfer)
     return transfers
   
-  async def lookup_transactions(self, transaction_ids: List[Union[int, str]], 
+  async def lookup_transactions(self, transaction_ids: List[Union[int, str, bytes]], 
               journal: bool = True, transfers: bool = True) -> List[LedgerTransaction]:
     """Fetch transactions by ID."""
     session = self.get_session()
-    
-    # Convert all IDs to string format
-    ids = [str(tid) for tid in transaction_ids]
-    
+    ids = [b for tid in transaction_ids if (b := _ulid_bytes(tid)) is not None]
+    if not ids:
+      return []
     result = await session.execute(select(SQLTransaction).filter(SQLTransaction.id.in_(ids)))
     sql_transactions = result.scalars().all()
     
-    return [self._convert_sql_transaction_to_ledger_transaction(tx, journal, transfers) 
-        for tx in sql_transactions]
+    results: List[LedgerTransaction] = []
+    for tx in sql_transactions:
+      results.append(await self._convert_sql_transaction_to_ledger_transaction(tx, journal, transfers))
+    return results
   
-  async def lookup_entries(self, entry_ids: List[Union[int, str]]) -> List[LedgerJournalEntry]:
+  async def lookup_entries(self, entry_ids: List[Union[int, str, bytes]]) -> List[LedgerJournalEntry]:
     """Fetch journal entries by ID."""
     session = self.get_session()
-    
-    # Convert all IDs to string format
-    ids = [str(eid) for eid in entry_ids]
-    
+    ids = [b for eid in entry_ids if (b := _ulid_bytes(eid)) is not None]
+    if not ids:
+      return []
     result = await session.execute(select(SQLJournalEntry).filter(SQLJournalEntry.id.in_(ids)))
     sql_entries = result.scalars().all()
     
@@ -313,23 +340,24 @@ class SQLLedgerAPI(LedgerAPI):
     query = select(SQLAccountTransaction)
     
     if filter.get('account_id'):
-      account_id = str(filter['account_id'])
-      query = query.filter(
-        (SQLAccountTransaction.src_id == account_id) | 
-        (SQLAccountTransaction.dst_id == account_id)
-      )
+      account_id = _ulid_bytes(filter.get('account_id'))
+      if account_id is not None:
+        query = query.filter(
+          (SQLAccountTransaction.src_id == account_id) |
+          (SQLAccountTransaction.dst_id == account_id)
+        )
     
     if filter.get('timestamp_min'):
-      query = query.filter(SQLAccountTransaction.ts_created >= filter['timestamp_min'])
+      query = query.filter(SQLAccountTransaction.ts_created >= filter.get('timestamp_min'))
     
     if filter.get('timestamp_max'):
-      query = query.filter(SQLAccountTransaction.ts_created <= filter['timestamp_max'])
+      query = query.filter(SQLAccountTransaction.ts_created <= filter.get('timestamp_max'))
     
     if filter.get('limit'):
-      query = query.limit(filter['limit'])
+      query = query.limit(filter.get('limit'))
     
     if filter.get('offset'):
-      query = query.offset(filter['offset'])
+      query = query.offset(filter.get('offset'))
     
     result = await session.execute(query)
     sql_transfers = result.scalars().all()
@@ -347,23 +375,24 @@ class SQLLedgerAPI(LedgerAPI):
     query = select(SQLAccountBalance)
     
     if filter.get('account_id'):
-      account_id = str(filter['account_id'])
-      query = query.filter(SQLAccountBalance.account_id == account_id)
+      account_id = _ulid_bytes(filter.get('account_id'))
+      if account_id is not None:
+        query = query.filter(SQLAccountBalance.account_id == account_id)
     
     if filter.get('timestamp_min'):
-      query = query.filter(SQLAccountBalance.ts_created >= filter['timestamp_min'])
+      query = query.filter(SQLAccountBalance.ts_created >= filter.get('timestamp_min'))
     
     if filter.get('timestamp_max'):
-      query = query.filter(SQLAccountBalance.ts_created <= filter['timestamp_max'])
+      query = query.filter(SQLAccountBalance.ts_created <= filter.get('timestamp_max'))
     
     # Order by timestamp (most recent first) BEFORE applying limit/offset
     query = query.order_by(SQLAccountBalance.ts_created.desc())
     
     if filter.get('limit'):
-      query = query.limit(filter['limit'])
+      query = query.limit(filter.get('limit'))
     
     if filter.get('offset'):
-      query = query.offset(filter['offset'])
+      query = query.offset(filter.get('offset'))
     
     result = await session.execute(query)
     sql_balances = result.scalars().all()
@@ -377,23 +406,26 @@ class SQLLedgerAPI(LedgerAPI):
     q = select(SQLAccount)
     
     if query.get('account_id'):
-      account_id = str(query['account_id'])
-      q = q.filter(SQLAccount.id == account_id)
+      account_id = _ulid_bytes(query.get('account_id'))
+      if account_id is not None:
+        q = q.filter(SQLAccount.id == account_id)
     
     if query.get('workspace_id'):
-      q = q.filter(SQLAccount.workspace_id == query['workspace_id'])
+      wid_raw = query.get('workspace_id')
+      wid = _ulid_bytes(wid_raw) if isinstance(wid_raw, (str, bytes)) else wid_raw
+      q = q.filter(SQLAccount.workspace_id == wid)
     
     if query.get('name'):
-      q = q.filter(SQLAccount.name == query['name'])
+      q = q.filter(SQLAccount.name == query.get('name'))
     
     if query.get('account_code'):
-      q = q.filter(SQLAccount.account_code == query['account_code'])
+      q = q.filter(SQLAccount.account_code == query.get('account_code'))
     
     if query.get('limit'):
-      q = q.limit(query['limit'])
+      q = q.limit(query.get('limit'))
     
     if query.get('offset'):
-      q = q.offset(query['offset'])
+      q = q.offset(query.get('offset'))
     
     result = await session.execute(q)
     sql_accounts = result.scalars().all()
@@ -406,31 +438,34 @@ class SQLLedgerAPI(LedgerAPI):
     q = select(SQLAccountTransaction)
     
     if query.get('transfer_id'):
-      transfer_id = str(query['transfer_id'])
-      q = q.filter(SQLAccountTransaction.id == transfer_id)
+      transfer_id = _ulid_bytes(query.get('transfer_id'))
+      if transfer_id is not None:
+        q = q.filter(SQLAccountTransaction.id == transfer_id)
     
     if query.get('account_id'):
-      account_id = str(query['account_id'])
-      q = q.filter(
-        (SQLAccountTransaction.src_id == account_id) | 
-        (SQLAccountTransaction.dst_id == account_id)
-      )
+      account_id = _ulid_bytes(query.get('account_id'))
+      if account_id is not None:
+        q = q.filter(
+          (SQLAccountTransaction.src_id == account_id) |
+          (SQLAccountTransaction.dst_id == account_id)
+        )
     
     if query.get('transaction_id'):
-      transaction_id = str(query['transaction_id'])
-      q = q.filter(SQLAccountTransaction.transaction_id == transaction_id)
+      transaction_id = _ulid_bytes(query.get('transaction_id'))
+      if transaction_id is not None:
+        q = q.filter(SQLAccountTransaction.transaction_id == transaction_id)
     
     if query.get('timestamp_min'):
-      q = q.filter(SQLAccountTransaction.ts_created >= query['timestamp_min'])
+      q = q.filter(SQLAccountTransaction.ts_created >= query.get('timestamp_min'))
     
     if query.get('timestamp_max'):
-      q = q.filter(SQLAccountTransaction.ts_created <= query['timestamp_max'])
+      q = q.filter(SQLAccountTransaction.ts_created <= query.get('timestamp_max'))
     
     if query.get('limit'):
-      q = q.limit(query['limit'])
+      q = q.limit(query.get('limit'))
     
     if query.get('offset'):
-      q = q.offset(query['offset'])
+      q = q.offset(query.get('offset'))
     
     result = await session.execute(q)
     sql_transfers = result.scalars().all()
@@ -452,26 +487,30 @@ class SQLLedgerAPI(LedgerAPI):
     )
     
     if query.get('transaction_id'):
-      transaction_id = str(query['transaction_id'])
-      q = q.filter(SQLTransaction.id == transaction_id)
+      transaction_id = _ulid_bytes(query.get('transaction_id'))
+      if transaction_id is not None:
+        q = q.filter(SQLTransaction.id == transaction_id)
     
-    if query.get('transaction_type'):
-      q = q.filter(SQLTransaction.transaction_type == query['transaction_type'].value)
+    tt = query.get('transaction_type')
+    if tt is not None:
+      q = q.filter(SQLTransaction.transaction_type == tt.value)
     
     if query.get('user_id'):
-      q = q.filter(SQLTransaction.user_id == query['user_id'])
+      user_id_raw = query.get('user_id')
+      user_id = _ulid_bytes(user_id_raw) if isinstance(user_id_raw, (str, bytes)) else user_id_raw
+      q = q.filter(SQLTransaction.user_id == user_id)
     
     if query.get('timestamp_min'):
-      q = q.filter(SQLTransaction.ts_created >= query['timestamp_min'])
+      q = q.filter(SQLTransaction.ts_created >= query.get('timestamp_min'))
     
     if query.get('timestamp_max'):
-      q = q.filter(SQLTransaction.ts_created <= query['timestamp_max'])
+      q = q.filter(SQLTransaction.ts_created <= query.get('timestamp_max'))
     
     if query.get('limit'):
-      q = q.limit(query['limit'])
+      q = q.limit(query.get('limit'))
     
     if query.get('offset'):
-      q = q.offset(query['offset'])
+      q = q.offset(query.get('offset'))
     
     result = await session.execute(q)
     sql_transactions = result.scalars().all()
@@ -489,28 +528,31 @@ class SQLLedgerAPI(LedgerAPI):
     q = select(SQLJournalEntry)
     
     if query.get('entry_id'):
-      entry_id = str(query['entry_id'])
-      q = q.filter(SQLJournalEntry.id == entry_id)
+      entry_id = _ulid_bytes(query.get('entry_id'))
+      if entry_id is not None:
+        q = q.filter(SQLJournalEntry.id == entry_id)
     
     if query.get('account_id'):
-      account_id = str(query['account_id'])
-      q = q.filter(SQLJournalEntry.account_id == account_id)
+      account_id = _ulid_bytes(query.get('account_id'))
+      if account_id is not None:
+        q = q.filter(SQLJournalEntry.account_id == account_id)
     
     if query.get('transaction_id'):
-      transaction_id = str(query['transaction_id'])
-      q = q.filter(SQLJournalEntry.transaction_id == transaction_id)
+      transaction_id = _ulid_bytes(query.get('transaction_id'))
+      if transaction_id is not None:
+        q = q.filter(SQLJournalEntry.transaction_id == transaction_id)
     
     if query.get('timestamp_min'):
-      q = q.filter(SQLJournalEntry.ts_created >= query['timestamp_min'])
+      q = q.filter(SQLJournalEntry.ts_created >= query.get('timestamp_min'))
     
     if query.get('timestamp_max'):
-      q = q.filter(SQLJournalEntry.ts_created <= query['timestamp_max'])
+      q = q.filter(SQLJournalEntry.ts_created <= query.get('timestamp_max'))
     
     if query.get('limit'):
-      q = q.limit(query['limit'])
+      q = q.limit(query.get('limit'))
     
     if query.get('offset'):
-      q = q.offset(query['offset'])
+      q = q.offset(query.get('offset'))
     
     result = await session.execute(q)
     sql_entries = result.scalars().all()
@@ -518,18 +560,20 @@ class SQLLedgerAPI(LedgerAPI):
   
   def _convert_sql_account_to_ledger_account(self, sql_account: SQLAccount) -> LedgerAccount:
     """Convert SQLAccount model to LedgerAccount pydantic model."""
-    return LedgerAccount(
-      id=sql_account.id,
-      name=sql_account.name,
-      account_code=sql_account.account_code,
+    details_raw: Optional[str] = sql_account.details  # type: ignore[assignment]
+    return LedgerAccount(  # type: ignore[call-arg]
+      id=sql_account.id,  # type: ignore[arg-type]
+      name=sql_account.name,  # type: ignore[arg-type]
+      account_code=sql_account.account_code,  # type: ignore[arg-type]
       account_type=AccountType(sql_account.account_type),
       side=LedgerSide(sql_account.side),
-      workspace_id=sql_account.workspace_id,
-      is_promo=sql_account.is_promo,
-      decimals=sql_account.decimals,
-      currency=sql_account.currency,
-      details=json.loads(sql_account.details) if sql_account.details else None,
-      history=sql_account.history
+      workspace_id=sql_account.workspace_id,  # type: ignore[arg-type]
+      is_promo=sql_account.is_promo,  # type: ignore[arg-type]
+      decimals=sql_account.decimals,  # type: ignore[arg-type]
+      currency=sql_account.currency,  # type: ignore[arg-type]
+      details=json.loads(details_raw) if details_raw else None,
+      history=sql_account.history,  # type: ignore[arg-type]
+      allow_negative=True,
     )
   
   async def _convert_sql_transaction_to_ledger_transaction(self, sql_transaction: SQLTransaction, 
@@ -547,37 +591,40 @@ class SQLLedgerAPI(LedgerAPI):
         converted_transfer = self._convert_sql_account_transaction_to_ledger_transfer(transfer)
         transfers.append(converted_transfer)
     
-    return LedgerTransaction(
-      id=sql_transaction.id,
+    details_raw: Optional[str] = sql_transaction.details  # type: ignore[assignment]
+    return LedgerTransaction(  # type: ignore[call-arg]
+      id=sql_transaction.id,  # type: ignore[arg-type]
       transaction_type=TransactionType(sql_transaction.transaction_type),
       entries=entries,
       transfers=transfers,
-      ts_created=sql_transaction.ts_created,
-      user_id=sql_transaction.user_id,
-      reference=sql_transaction.reference,
-      description=sql_transaction.description,
-      details=json.loads(sql_transaction.details) if sql_transaction.details else None
+      ts_created=sql_transaction.ts_created,  # type: ignore[arg-type]
+      user_id=sql_transaction.user_id,  # type: ignore[arg-type]
+      reference=sql_transaction.reference,  # type: ignore[arg-type]
+      description=sql_transaction.description,  # type: ignore[arg-type]
+      details=json.loads(details_raw) if details_raw else None,
     )
   
   def _convert_sql_entry_to_ledger_entry(self, sql_entry: SQLJournalEntry) -> LedgerJournalEntry:
     """Convert SQLJournalEntry model to LedgerJournalEntry pydantic model."""
-    return LedgerJournalEntry(
-      id=sql_entry.id,
-      account_id=sql_entry.account_id,
-      debit=sql_entry.debit,
-      credit=sql_entry.credit,
-      ts_created=sql_entry.ts_created,
-      transaction_id=sql_entry.transaction_id if sql_entry.transaction_id else None,
-      description=sql_entry.description
+    tx_id_raw: Optional[bytes] = sql_entry.transaction_id  # type: ignore[assignment]
+    return LedgerJournalEntry(  # type: ignore[call-arg]
+      id=sql_entry.id,  # type: ignore[arg-type]
+      account_id=sql_entry.account_id,  # type: ignore[arg-type]
+      debit=sql_entry.debit,  # type: ignore[arg-type]
+      credit=sql_entry.credit,  # type: ignore[arg-type]
+      ts_created=sql_entry.ts_created,  # type: ignore[arg-type]
+      transaction_id=tx_id_raw if tx_id_raw else None,
+      description=sql_entry.description,  # type: ignore[arg-type]
     )
   
   def _convert_sql_balance_to_ledger_balance(self, sql_balance: SQLAccountBalance) -> LedgerAccountBalance:
     """Convert SQLAccountBalance model to LedgerAccountBalance pydantic model."""
-    return LedgerAccountBalance(
-      account_id=sql_balance.account_id,
-      balance=sql_balance.balance,
-      ts_created=sql_balance.ts_created,
-      last_transaction_id=sql_balance.this_tx if sql_balance.this_tx else None
+    this_tx_raw: Optional[bytes] = sql_balance.this_tx  # type: ignore[assignment]
+    return LedgerAccountBalance(  # type: ignore[call-arg]
+      account_id=sql_balance.account_id,  # type: ignore[arg-type]
+      balance=sql_balance.balance,  # type: ignore[arg-type]
+      ts_created=sql_balance.ts_created,  # type: ignore[arg-type]
+      last_transaction_id=this_tx_raw if this_tx_raw else None,
     )
   
   def get_session(self) -> AsyncSession:
@@ -615,30 +662,33 @@ class SQLLedgerAPI(LedgerAPI):
       except Exception as e:
         print(f"Warning: Error disposing engine: {e}")
   
-  async def get_account_balance(self, account_id: Union[int, str]) -> int:
+  async def get_account_balance(self, account_id: Union[int, str, bytes]) -> int:
     """Get current balance for an account."""
     session = self.get_session()
-    account_id = str(account_id)
-    
-    result = await session.execute(select(SQLAccount).filter(SQLAccount.id == account_id))
+    aid = _ulid_bytes(account_id)
+    if aid is None:
+      return 0
+    result = await session.execute(select(SQLAccount).filter(SQLAccount.id == aid))
     account = result.scalars().first()
-    return account.balance if account else 0
+    return account.balance if account else 0  # type: ignore[return-value]
   
   async def create_tables(self) -> None:
     """Create all database tables."""
+    assert self.engine is not None, "Engine not initialized"
     async with self.engine.begin() as conn:
       await conn.run_sync(Base.metadata.create_all)
   
 
   def _convert_sql_account_transaction_to_ledger_transfer(self, sql_transaction: SQLAccountTransaction, with_balance: bool = True) -> LedgerAccountTransfer:
     """Convert SQLAccountTransaction model to LedgerAccountTransfer pydantic model."""
-    transfer_obj = LedgerAccountTransfer(
-      id=sql_transaction.id,
-      debit_account_id=sql_transaction.dst_id,  # Destination is debit account
-      credit_account_id=sql_transaction.src_id,  # Source is credit account
-      amount=sql_transaction.amount,
-      ts_created=sql_transaction.ts_created,
-      transaction_id=sql_transaction.transaction_id if sql_transaction.transaction_id else None
+    tx_id_raw: Optional[bytes] = sql_transaction.transaction_id  # type: ignore[assignment]
+    transfer_obj = LedgerAccountTransfer(  # type: ignore[call-arg]
+      id=sql_transaction.id,  # type: ignore[arg-type]
+      debit_account_id=sql_transaction.dst_id,  # type: ignore[arg-type]
+      credit_account_id=sql_transaction.src_id,  # type: ignore[arg-type]
+      amount=sql_transaction.amount,  # type: ignore[arg-type]
+      ts_created=sql_transaction.ts_created,  # type: ignore[arg-type]
+      transaction_id=tx_id_raw if tx_id_raw else None,
     )
     if with_balance:
       # For now, we'll set balance to None since we don't have the balance lookup logic
@@ -649,6 +699,7 @@ class SQLLedgerAPI(LedgerAPI):
   async def _create_sqlite_triggers(self) -> None:
     """Create SQLite triggers for balance updates."""
     print("Creating SQLite triggers (async)...")
+    assert self.engine is not None, "Engine not initialized"
 
     # Create triggers directly using raw SQL
     async with self.engine.begin() as connection:

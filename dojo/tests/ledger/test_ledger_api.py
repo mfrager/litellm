@@ -17,9 +17,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from tabulate import tabulate
 
-sys.path.append('../..')
+# Add project root so "dojo" package can be imported
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
 
-from ledger.ledger_api import (
+from dojo.ledger.ledger_api import (
     LedgerAPI,
     Ledger,
     LedgerAccount,
@@ -39,8 +42,9 @@ from ledger.ledger_api import (
     generate_account_code,
 )
 
-from ledger.sql_ledger import SQLLedgerAPI
-from ledger.ledger_tx_builder import LedgerTransactionBuilder
+from dojo.ledger.sql_ledger import SQLLedgerAPI
+from dojo.ledger.ledger_tx_builder import LedgerTransactionBuilder
+from dojo.models.functions import generate_ulid
 
 # Decimal precision for monetary calculations
 DECIMALS = 10
@@ -75,35 +79,49 @@ class TestComprehensiveLedgerAPI:
         return SQLLedgerAPI(ledger, database_url)
     
     @pytest.fixture
-    def tx_builder(self):
-        """Fixture providing transaction builder with comprehensive account IDs."""
+    def account_id_bytes(self):
+        """Binary ULID mapping for account codes (shared by tx_builder and comprehensive_accounts)."""
+        return {
+            "cash": generate_ulid(),
+            "ar_processor": generate_ulid(),
+            "unearned_revenue": generate_ulid(),
+            "tax_payable": generate_ulid(),
+            "promo_liability": generate_ulid(),
+            "revenue_product_a": generate_ulid(),
+            "promo_revenue_product_a": generate_ulid(),
+            "service_fees_expense": generate_ulid(),
+            "promo_expense": generate_ulid(),
+            "internal_cost": generate_ulid(),
+            "internal_payable": generate_ulid(),
+        }
+
+    @pytest.fixture
+    def tx_builder(self, account_id_bytes):
+        """Fixture providing transaction builder with comprehensive account IDs (binary ULIDs)."""
+        ids = account_id_bytes
         account_ids = {
-            # Asset accounts
-            "cash_bank": "cash",
-            "ar_processor": "ar_processor", 
-            
-            # Liability accounts
-            "unearned_revenue": "unearned_revenue",
-            "tax_payable": "tax_payable",
-            "promo_liability": "promo_liability",
-            
-            # Income accounts
-            "revenue_product_a": "revenue_product_a",
-            "promo_revenue_product_a": "promo_revenue_product_a",
-            
-            # Expense accounts
-            "service_fees_expense": "service_fees_expense",
-            "promo_expense": "promo_expense",
+            "cash_bank": ids["cash"],
+            "ar_processor": ids["ar_processor"],
+            "unearned_revenue": ids["unearned_revenue"],
+            "tax_payable": ids["tax_payable"],
+            "promo_liability": ids["promo_liability"],
+            "revenue_product_a": ids["revenue_product_a"],
+            "promo_revenue_product_a": ids["promo_revenue_product_a"],
+            "service_fees_expense": ids["service_fees_expense"],
+            "promo_expense": ids["promo_expense"],
+            "internal_cost": ids["internal_cost"],
+            "internal_payable": ids["internal_payable"],
         }
         return LedgerTransactionBuilder(account_ids)
-    
+
     @pytest.fixture
-    def comprehensive_accounts(self):
-        """Create comprehensive chart of accounts for testing."""
+    def comprehensive_accounts(self, account_id_bytes):
+        """Create comprehensive chart of accounts for testing (binary ULIDs)."""
+        ids = account_id_bytes
         return [
             # ============= ASSET ACCOUNTS =============
             LedgerAccount(
-                id="cash",
+                id=ids["cash"],
                 name="Cash/Bank Account",
                 account_code=generate_account_code("Cash/Bank Account", 100),
                 account_type=AccountType.ASSET,
@@ -116,7 +134,7 @@ class TestComprehensiveLedgerAPI:
                 history=True
             ),
             LedgerAccount(
-                id="ar_processor",
+                id=ids["ar_processor"],
                 name="Accounts Receivable (Processor)",
                 account_code=generate_account_code("Accounts Receivable (Processor)", 100),
                 account_type=AccountType.ASSET,
@@ -131,7 +149,7 @@ class TestComprehensiveLedgerAPI:
             
             # ============= LIABILITY ACCOUNTS =============
             LedgerAccount(
-                id="unearned_revenue",
+                id=ids["unearned_revenue"],
                 name="Unearned Revenue",
                 account_code=generate_account_code("Unearned Revenue", 200),
                 account_type=AccountType.LIABILITY,
@@ -144,7 +162,7 @@ class TestComprehensiveLedgerAPI:
                 history=True
             ),
             LedgerAccount(
-                id="tax_payable",
+                id=ids["tax_payable"],
                 name="Tax Payable",
                 account_code=generate_account_code("Tax Payable", 100),
                 account_type=AccountType.LIABILITY,
@@ -157,7 +175,7 @@ class TestComprehensiveLedgerAPI:
                 history=True
             ),
             LedgerAccount(
-                id="promo_liability",
+                id=ids["promo_liability"],
                 name="Promo Credit Liability",
                 account_code=generate_account_code("Promo Credit Liability", 200),
                 account_type=AccountType.LIABILITY,
@@ -172,7 +190,7 @@ class TestComprehensiveLedgerAPI:
             
             # ============= INCOME ACCOUNTS =============
             LedgerAccount(
-                id="revenue_product_a",
+                id=ids["revenue_product_a"],
                 name="Revenue – Product A",
                 account_code=generate_account_code("Revenue – Product A", 100),
                 account_type=AccountType.INCOME,
@@ -185,7 +203,7 @@ class TestComprehensiveLedgerAPI:
                 history=True
             ),
             LedgerAccount(
-                id="promo_revenue_product_a",
+                id=ids["promo_revenue_product_a"],
                 name="Promo Revenue – Product A",
                 account_code=generate_account_code("Promo Revenue – Product A", 100),
                 account_type=AccountType.INCOME,
@@ -200,7 +218,7 @@ class TestComprehensiveLedgerAPI:
             
             # ============= EXPENSE ACCOUNTS =============
             LedgerAccount(
-                id="service_fees_expense",
+                id=ids["service_fees_expense"],
                 name="Service Fees Expense",
                 account_code=generate_account_code("Service Fees Expense", 100),
                 account_type=AccountType.EXPENSE,
@@ -213,13 +231,39 @@ class TestComprehensiveLedgerAPI:
                 history=True
             ),
             LedgerAccount(
-                id="promo_expense",
+                id=ids["promo_expense"],
                 name="Promo Credit Expense",
                 account_code=generate_account_code("Promo Credit Expense", 100),
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
                 workspace_id=100,
                 is_promo=True,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
+            ),
+            LedgerAccount(
+                id=ids["internal_cost"],
+                name="Internal Cost",
+                account_code=generate_account_code("Internal Cost", 100),
+                account_type=AccountType.EXPENSE,
+                side=LedgerSide.DEBIT,
+                workspace_id=100,
+                is_promo=False,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
+            ),
+            LedgerAccount(
+                id=ids["internal_payable"],
+                name="Internal Payable",
+                account_code=generate_account_code("Internal Payable", 100),
+                account_type=AccountType.LIABILITY,
+                side=LedgerSide.CREDIT,
+                workspace_id=100,
+                is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
                 details={"entity": "Company"},
@@ -648,24 +692,24 @@ class TestComprehensiveLedgerAPI:
         headers = ['Account ID', 'Account Name', 'Initial Balance', 'Final Balance', 'Change', 'Activity']
         print(f"\n{tabulate(verification_data, headers=headers, tablefmt='grid', colalign=['left', 'left', 'right', 'right', 'right', 'center'])}")
         
-        # Verify specific business logic
+        # Verify specific business logic (look up by account id from accounts list)
         print("\n📋 Business Logic Verification:")
-        
-        # Check that cash increased from settlements but decreased from expenses and tax remittance
-        cash_change = (final_balances["cash"] - initial_balances["cash"]) / SCALE
-        print(f"   • Cash net change: {fmt_decimal(cash_change)} (should reflect settlements - expenses - tax)")
-        
-        # Check that revenue accounts have credit balances (negative in our system)
-        revenue_balance = final_balances["revenue_product_a"] / SCALE
-        print(f"   • Product A revenue: {fmt_decimal(revenue_balance)} (should be negative for credit balance)")
-        
-        # Check that unearned revenue decreased as revenue was recognized
-        unearned_change = (final_balances["unearned_revenue"] - initial_balances["unearned_revenue"]) / SCALE
-        print(f"   • Unearned revenue change: {fmt_decimal(unearned_change)} (should decrease as revenue recognized)")
-        
-        # Check that promo liability has remaining balance after partial use
-        promo_balance = final_balances["promo_liability"] / SCALE
-        print(f"   • Promo liability balance: {fmt_decimal(promo_balance)} (should be negative for credit balance)")
+        cash_account = next((a for a in accounts if "Cash" in a.name), None)
+        revenue_account = next((a for a in accounts if "Revenue – Product A" in a.name or ("Product A" in a.name and "Revenue" in a.name)), None)
+        unearned_account = next((a for a in accounts if "Unearned Revenue" in a.name), None)
+        promo_liability_account = next((a for a in accounts if "Promo Credit Liability" in a.name), None)
+        if cash_account:
+            cash_change = (final_balances[cash_account.id] - initial_balances[cash_account.id]) / SCALE
+            print(f"   • Cash net change: {fmt_decimal(cash_change)} (should reflect settlements - expenses - tax)")
+        if revenue_account:
+            revenue_balance = final_balances[revenue_account.id] / SCALE
+            print(f"   • Product A revenue: {fmt_decimal(revenue_balance)} (should be negative for credit balance)")
+        if unearned_account:
+            unearned_change = (final_balances[unearned_account.id] - initial_balances[unearned_account.id]) / SCALE
+            print(f"   • Unearned revenue change: {fmt_decimal(unearned_change)} (should decrease as revenue recognized)")
+        if promo_liability_account:
+            promo_balance = final_balances[promo_liability_account.id] / SCALE
+            print(f"   • Promo liability balance: {fmt_decimal(promo_balance)} (should be negative for credit balance)")
 
     @pytest.mark.asyncio
     async def test_individual_transaction_types(self, sql_ledger_api, tx_builder, comprehensive_accounts):
@@ -951,11 +995,12 @@ class TestComprehensiveLedgerAPI:
                 transfer_data = []
                 for transfer in tx.transfers:
                     amount = Decimal(transfer.amount) / SCALE
+                    tid = transfer.id[:8].hex() + "..." if isinstance(transfer.id, bytes) else str(transfer.id)[:8] + "..."
                     transfer_data.append([
                         transfer.debit_account_id,
                         transfer.credit_account_id,
                         fmt_decimal(amount),
-                        transfer.id[:8] + "..."
+                        tid
                     ])
                 
                 headers = ['Debit Account', 'Credit Account', 'Amount', 'Transfer ID']

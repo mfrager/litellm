@@ -11,17 +11,25 @@ import os
 import sys
 import uuid
 import pytest
+import pytest_asyncio
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 from datetime import datetime, timezone
 from decimal import Decimal
 from tabulate import tabulate
 from ulid import ULID
+from dojo.models.functions import generate_ulid
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import create_async_engine
 
-sys.path.append('../..')
-load_dotenv('../../../.env')
+# Add project root so "dojo" package can be imported
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+load_dotenv(os.path.join(_root, '.env'))
 
-from ledger.ledger_api import (
+from dojo.ledger.ledger_api import (
     LedgerAPI,
     Ledger,
     LedgerAccount,
@@ -41,8 +49,8 @@ from ledger.ledger_api import (
     TransactionType
 )
 
-from ledger.sql_ledger import SQLLedgerAPI
-from ledger.ledger_tx_builder import LedgerTransactionBuilder
+from dojo.ledger.sql_ledger import SQLLedgerAPI
+from dojo.ledger.ledger_tx_builder import LedgerTransactionBuilder
 
 # Decimal precision for monetary calculations
 DECIMALS = 10
@@ -53,17 +61,19 @@ def fmt_decimal(val):
     return f"${Decimal(val).quantize(Decimal('0.0000000001')):,.10f}"
 
 def generate_session_account_mapping():
-    """Generate fresh ULID mapping for each test session."""
+    """Generate fresh binary ULID mapping for each test session."""
     return {
-        "cash": str(ULID()),
-        "ar_processor": str(ULID()),
-        "unearned_revenue": str(ULID()),
-        "tax_payable": str(ULID()),
-        "promo_liability": str(ULID()),
-        "revenue_product_a": str(ULID()),
-        "promo_revenue_product_a": str(ULID()),
-        "service_fees_expense": str(ULID()),
-        "promo_expense": str(ULID()),
+        "cash": generate_ulid(),
+        "ar_processor": generate_ulid(),
+        "unearned_revenue": generate_ulid(),
+        "tax_payable": generate_ulid(),
+        "promo_liability": generate_ulid(),
+        "revenue_product_a": generate_ulid(),
+        "promo_revenue_product_a": generate_ulid(),
+        "service_fees_expense": generate_ulid(),
+        "promo_expense": generate_ulid(),
+        "internal_cost": generate_ulid(),
+        "internal_payable": generate_ulid(),
     }
 
 
@@ -73,7 +83,21 @@ class TestComprehensiveLedgerAPI:
     @pytest.fixture
     def database_url(self):
         """Fixture providing MySQL database URL for testing."""
-        return os.environ['DATABASE_ASYNC_TEST']
+        url = os.environ.get('DATABASE_ASYNC_TEST')
+        if not url or 'mysql' not in url:
+            pytest.skip("DATABASE_ASYNC_TEST (MySQL) not set or not MySQL")
+        return url
+
+    @pytest_asyncio.fixture
+    async def check_mysql(self, database_url):
+        """Skip entire test class if MySQL is not reachable."""
+        try:
+            engine = create_async_engine(database_url, echo=False)
+            async with engine.begin() as conn:
+                await conn.execute(text("SELECT 1"))
+            await engine.dispose()
+        except OperationalError as e:
+            pytest.skip(f"MySQL server not reachable: {e}")
     
     async def get_or_create_account_id(self, sql_ledger_api, account_name: str) -> str:
         """Get existing account ID by name or return the mapped ULID."""
@@ -97,18 +121,18 @@ class TestComprehensiveLedgerAPI:
             if original_key in account_name.lower().replace(" ", "_").replace("–", "_").replace("/", "_"):
                 return ulid_id
         
-        # Fallback: generate new ULID if no mapping found
-        return str(ULID())
+        # Fallback: generate new binary ULID if no mapping found
+        return generate_ulid()
     
     @pytest.fixture
-    def sql_ledger_api(self, database_url):
+    def sql_ledger_api(self, database_url, check_mysql):
         """Fixture providing SQLLedgerAPI instance."""
         ledger = Ledger(
             id=1,
             accounts=[],
             has_journal=True,
             has_transactions=True,
-            config={"test": True}
+            config={"test": True, "balance_via_trigger": True}
         )
         return SQLLedgerAPI(ledger, database_url)
     
@@ -137,6 +161,8 @@ class TestComprehensiveLedgerAPI:
             # Expense accounts
             "service_fees_expense": account_mapping["service_fees_expense"],
             "promo_expense": account_mapping["promo_expense"],
+            "internal_cost": account_mapping["internal_cost"],
+            "internal_payable": account_mapping["internal_payable"],
         }
         return LedgerTransactionBuilder(account_ids)
     
@@ -263,6 +289,32 @@ class TestComprehensiveLedgerAPI:
                 side=LedgerSide.DEBIT,
                 workspace_id=100,
                 is_promo=True,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
+            ),
+            LedgerAccount(
+                id=account_mapping["internal_cost"],
+                name="Internal Cost",
+                account_code=generate_account_code("Internal Cost", 100),
+                account_type=AccountType.EXPENSE,
+                side=LedgerSide.DEBIT,
+                workspace_id=100,
+                is_promo=False,
+                decimals=DECIMALS,
+                currency="USD",
+                details={"entity": "Company"},
+                history=True
+            ),
+            LedgerAccount(
+                id=account_mapping["internal_payable"],
+                name="Internal Payable",
+                account_code=generate_account_code("Internal Payable", 100),
+                account_type=AccountType.LIABILITY,
+                side=LedgerSide.CREDIT,
+                workspace_id=100,
+                is_promo=False,
                 decimals=DECIMALS,
                 currency="USD",
                 details={"entity": "Company"},
@@ -534,6 +586,10 @@ class TestComprehensiveLedgerAPI:
                     account_ids["service_fees_expense"] = account.id
                 elif "Promo Credit Expense" in account.name:
                     account_ids["promo_expense"] = account.id
+                elif "Internal Cost" in account.name:
+                    account_ids["internal_cost"] = account.id
+                elif "Internal Payable" in account.name:
+                    account_ids["internal_payable"] = account.id
             
             # Create new transaction builder with updated IDs
             tx_builder = LedgerTransactionBuilder(account_ids)
@@ -888,6 +944,10 @@ class TestComprehensiveLedgerAPI:
                     account_ids["service_fees_expense"] = account.id
                 elif "Promo Credit Expense" in account.name:
                     account_ids["promo_expense"] = account.id
+                elif "Internal Cost" in account.name:
+                    account_ids["internal_cost"] = account.id
+                elif "Internal Payable" in account.name:
+                    account_ids["internal_payable"] = account.id
             
             tx_builder = LedgerTransactionBuilder(account_ids)
             
@@ -1041,6 +1101,10 @@ class TestComprehensiveLedgerAPI:
                     account_ids["service_fees_expense"] = account.id
                 elif "Promo Credit Expense" in account.name:
                     account_ids["promo_expense"] = account.id
+                elif "Internal Cost" in account.name:
+                    account_ids["internal_cost"] = account.id
+                elif "Internal Payable" in account.name:
+                    account_ids["internal_payable"] = account.id
             
             tx_builder = LedgerTransactionBuilder(account_ids)
             
@@ -1233,7 +1297,7 @@ class TestComprehensiveLedgerAPI:
                         transfer.debit_account_id,
                         transfer.credit_account_id,
                         fmt_decimal(amount),
-                        transfer.id[:8] + "..."
+                        transfer.id[:8].hex() + "..." if isinstance(transfer.id, bytes) else str(transfer.id)[:8] + "..."
                     ])
                 
                 headers = ['Debit Account', 'Credit Account', 'Amount', 'Transfer ID']
@@ -1432,7 +1496,7 @@ class TestComprehensiveLedgerAPI:
                 for i in range(len(final_accounts), 3):
                     if i == 0:  # Cash account
                         missing_account = LedgerAccount(
-                            id=str(ULID()),
+                            id=generate_ulid(),
                             name="Precision Cash Account",
                             account_code=f"internal_precision_cash_account_{i}",
                             account_type=AccountType.ASSET,
@@ -1446,7 +1510,7 @@ class TestComprehensiveLedgerAPI:
                         )
                     elif i == 1:  # Revenue account
                         missing_account = LedgerAccount(
-                            id=str(ULID()),
+                            id=generate_ulid(),
                             name="Precision Revenue Account",
                             account_code=f"internal_precision_revenue_account_{i}",
                             account_type=AccountType.INCOME,
@@ -1460,7 +1524,7 @@ class TestComprehensiveLedgerAPI:
                         )
                     else:  # Expense account
                         missing_account = LedgerAccount(
-                            id=str(ULID()),
+                            id=generate_ulid(),
                             name="Precision Expense Account",
                             account_code=f"internal_precision_expense_account_{i}",
                             account_type=AccountType.EXPENSE,
@@ -1561,12 +1625,13 @@ class TestComprehensiveLedgerAPI:
                     balances_before[account.id] = await sql_ledger_api.get_account_balance(account.id)
                 await sql_ledger_api.end_transaction()
                 
-                # Execute test transaction(s)
+                # Execute test transaction(s) - pass Decimal/str to avoid float precision loss
+                amount_arg = test_case["amount"]
                 if test_case.get("iterations"):
                     # Multiple iterations test
                     for i in range(test_case["iterations"]):
                         tx = await tx_builder.payment(
-                            amount=float(test_case["amount"]),
+                            amount=amount_arg,
                             user_id=100,
                             name=f"{test_case['name']} - Iteration {i+1}",
                             description=f"{test_case['description']} - Iteration {i+1}"
@@ -1579,7 +1644,7 @@ class TestComprehensiveLedgerAPI:
                 else:
                     # Single transaction test
                     tx = await tx_builder.payment(
-                        amount=float(test_case["amount"]),
+                        amount=amount_arg,
                         user_id=100,
                         name=test_case["name"],
                         description=test_case["description"]

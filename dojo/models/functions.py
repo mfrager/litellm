@@ -8,7 +8,8 @@ __all__ = [
 ]
 
 def generate_ulid():
-  return str(ULID())
+  """Return a new ULID as 16-byte binary (big-endian)."""
+  return ULID().bytes
 
 def generate_utcnow():
   return datetime.now(pytz.utc)

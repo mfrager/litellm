@@ -1,7 +1,7 @@
 import string
 import secrets
-from ulid import ULID
-from models.router_model import Token, User, Workspace
+from dojo.models.functions import generate_ulid
+from dojo.models.router_model import Token, User, Workspace
 
 class RouterAuth:
     """Simple authentication class for creating users associated with workspaces."""
@@ -10,8 +10,8 @@ class RouterAuth:
                    last_name: str = None, phone: str = None, company: str = None, 
                    is_active: bool = True, last_login = None) -> tuple[User, Workspace]:
         """Create a new user instance with an associated workspace."""
-        user_id = str(ULID())
-        workspace_id = str(ULID())
+        user_id = generate_ulid()
+        workspace_id = generate_ulid()
         
         workspace = Workspace(
             id=workspace_id,
@@ -38,7 +38,7 @@ class RouterAuth:
         alphabet = string.ascii_letters  # A-Za-z
         token = ''.join(secrets.choice(alphabet) for _ in range(64))
         return Token(
-            id=str(ULID()),
+            id=generate_ulid(),
             workspace_id=workspace_id,
             token=token
         )

@@ -9,32 +9,37 @@ import pytest
 import pytest_asyncio
 from ulid import ULID
 from datetime import datetime
+from dojo.models.functions import generate_ulid
 from decimal import Decimal
 from dotenv import load_dotenv
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from tabulate import tabulate
 
-# Also try loading from current directory and parent directories as fallback
-load_dotenv('.env')
-load_dotenv('../.env')
-load_dotenv('../../.env')
-load_dotenv('../../../.env')
-sys.path.append('../..')
+# Add project root so "dojo" package can be imported
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+load_dotenv(os.path.join(_root, '.env'))
 
-# Import the actual models
-from models.router_model import User, Workspace, Token, Base as RouterBase
-from models.ledger_model import SQLAccount, Base as LedgerBase
-from ledger.ledger_api import (
-    LedgerAccount, AccountType, LedgerSide, Ledger, LedgerAccountTransaction, 
-    LedgerAccountTransfer, LedgerTransferTransaction, LedgerTransaction, 
+from dojo.models.router_model import User, Workspace, Token, Base as RouterBase
+from dojo.models.ledger_model import SQLAccount, Base as LedgerBase
+from dojo.ledger.ledger_api import (
+    LedgerAccount, AccountType, LedgerSide, Ledger, LedgerAccountTransaction,
+    LedgerAccountTransfer, LedgerTransferTransaction, LedgerTransaction,
     LedgerJournalEntry, LedgerLogicalTransaction, TransactionType
 )
-from ledger.sql_ledger import SQLLedgerAPI
-from router.auth import RouterAuth
+from dojo.ledger.sql_ledger import SQLLedgerAPI
+from dojo.router.auth import RouterAuth
 
 # Decimal precision for monetary calculations
 DECIMALS = 10
 SCALE = Decimal(10) ** DECIMALS
+
+def _id_str(v):
+    """String form of an ID (bytes or str) for account codes and display."""
+    return str(ULID.from_bytes(v)) if isinstance(v, bytes) else str(v)
 
 def fmt_decimal(val):
     """Format decimal values for display."""
@@ -66,6 +71,12 @@ async def database_connection():
     )
     
     try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT 1"))
+    except OperationalError as e:
+        await engine.dispose()
+        pytest.skip(f"MySQL server not reachable: {e}")
+    try:
         yield engine
     finally:
         # Ensure all connections are properly closed
@@ -96,7 +107,7 @@ async def sql_ledger_api(session):
         accounts=[],
         has_journal=True,
         has_transactions=True,
-        config={"currency": "USD", "decimals": DECIMALS}
+        config={"currency": "USD", "decimals": DECIMALS, "balance_via_trigger": True}
     )
     
     # Create SQL Ledger API using the fresh session
@@ -125,8 +136,8 @@ class DatabaseOperations:
         if email is None:
             email = f"test+{ULID()}@example.com"
         
-        workspace_id = str(ULID())
-        user_id = str(ULID())
+        workspace_id = generate_ulid()
+        user_id = generate_ulid()
         
         workspace = Workspace(id=workspace_id, owner_id=user_id)
         user = User(id=user_id, email=email, workspace_id=workspace_id)
@@ -146,7 +157,7 @@ class DatabaseOperations:
         existing_cc_accounts = await self.sql_ledger_api.query_accounts({"account_code": "internal_cc_processor"})
         if not existing_cc_accounts:
             cc_account = LedgerAccount(
-                id=str(ULID()),
+                id=generate_ulid(),
                 name="Internal CC Processor Account",
                 account_code="internal_cc_processor",
                 account_type=AccountType.ASSET,
@@ -162,13 +173,13 @@ class DatabaseOperations:
             print(f"✅ Found existing internal CC processor account: {existing_cc_accounts[0].id}")
         
         # Check if workspace account exists
-        workspace_account_code = f"workspace_{workspace.id}_balance"
+        workspace_account_code = f"workspace_{_id_str(workspace.id)}_balance"
         existing_workspace_accounts = await self.sql_ledger_api.query_accounts({"account_code": workspace_account_code})
         if not existing_workspace_accounts:
             # Create workspace balance account
             workspace_account = LedgerAccount(
-                id=str(ULID()),
-                name=f"Workspace Balance - {workspace.id}",
+                id=generate_ulid(),
+                name=f"Workspace Balance - {_id_str(workspace.id)}",
                 account_code=workspace_account_code,
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
@@ -188,7 +199,7 @@ class DatabaseOperations:
     async def fund_workspace_account(self, user, workspace, amount: int = 1000):  # $1000.00
         """Fund workspace account using proper transaction creation."""
         # Get accounts
-        workspace_accounts = await self.sql_ledger_api.query_accounts({"account_code": f"workspace_{workspace.id}_balance"})
+        workspace_accounts = await self.sql_ledger_api.query_accounts({"account_code": f"workspace_{_id_str(workspace.id)}_balance"})
         cc_accounts = await self.sql_ledger_api.query_accounts({"account_code": "internal_cc_processor"})
         
         if not workspace_accounts or not cc_accounts:
@@ -198,34 +209,33 @@ class DatabaseOperations:
         cc_account = cc_accounts[0]
         
         # Create proper ledger transaction with journal entries and transfers
-        transaction_id = str(ULID())
-
+        transaction_id = generate_ulid()
         amount = amount * (10 ** DECIMALS)
         
         # Create journal entries (accounting double-entry)
         debit_entry = LedgerJournalEntry(
-            id=str(ULID()),
+            id=generate_ulid(),
             account_id=cc_account.id,
             debit=amount,
             credit=0,
             transaction_id=transaction_id,
-            description=f"Fund workspace account {workspace.id}",
+            description=f"Fund workspace account {_id_str(workspace.id)}",
             ts_created=datetime.now()
         )
         
         credit_entry = LedgerJournalEntry(
-            id=str(ULID()),
+            id=generate_ulid(),
             account_id=workspace_account.id,
             debit=0,
             credit=amount,
             transaction_id=transaction_id,
-            description=f"Fund workspace account {workspace.id}",
+            description=f"Fund workspace account {_id_str(workspace.id)}",
             ts_created=datetime.now()
         )
         
         # Create transfer
         transfer = LedgerAccountTransfer(
-            id=str(ULID()),
+            id=generate_ulid(),
             debit_account_id=cc_account.id,
             credit_account_id=workspace_account.id,
             amount=amount,

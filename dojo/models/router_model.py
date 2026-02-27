@@ -2,15 +2,15 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, T
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 
-from .base import Base
+from .base import Base, ULID_BINARY
 from .common import CommonBase
 from .functions import generate_ulid, generate_utcnow
 
 class Workspace(CommonBase, Base):
     __tablename__ = 'router_workspace'
     
-    id = Column(String(26), primary_key=True, default=generate_ulid)
-    owner_id = Column(String(26), nullable=False)
+    id = Column(ULID_BINARY, primary_key=True, default=generate_ulid)
+    owner_id = Column(ULID_BINARY, nullable=False)
     is_active = Column(Boolean, default=True)
     
     # Relationships
@@ -19,8 +19,8 @@ class Workspace(CommonBase, Base):
 class User(CommonBase, Base):
     __tablename__ = 'router_user'
     
-    id = Column(String(26), primary_key=True, default=generate_ulid)
-    workspace_id = Column(String(26), nullable=True, index=True)
+    id = Column(ULID_BINARY, primary_key=True, default=generate_ulid)
+    workspace_id = Column(ULID_BINARY, nullable=True, index=True)
     email = Column(String(255), unique=True, nullable=False)
     keycloak_uuid = Column(String(36), unique=True, nullable=True)
     first_name = Column(String(100), nullable=True)
@@ -37,9 +37,9 @@ class User(CommonBase, Base):
 class Token(CommonBase, Base):
     __tablename__ = 'router_token'
     
-    id = Column(String(26), primary_key=True, default=generate_ulid)
+    id = Column(ULID_BINARY, primary_key=True, default=generate_ulid)
     token = Column(String(64), nullable=False, unique=True)           # The actual token
-    workspace_id = Column(String(26), nullable=False)                 # ULID for workspace reference
+    workspace_id = Column(ULID_BINARY, nullable=False)                 # ULID for workspace reference
     is_active = Column(Boolean, nullable=False, default=True)         # Active flag
     last_access = Column(DateTime, nullable=True)                     # Last use of API token
 

@@ -13,16 +13,17 @@ import logging
 from typing import Dict, Optional, List, Tuple
 from decimal import Decimal
 from ulid import ULID
+from dojo.models.functions import generate_ulid
 
-# Add the parent directory to the path to import ledger modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+def _id_str(v):
+  """String form of an ID (bytes or str) for use in account codes and display."""
+  return str(ULID.from_bytes(v)) if isinstance(v, bytes) else str(v)
 
-from ledger.ledger_api import AccountType, Ledger, LedgerAccount, LedgerSide, LedgerAccountTransaction, LedgerLogicalTransaction
-from ledger.ledger_tx_builder import LedgerTransactionBuilder
-from ledger.sql_ledger import SQLLedgerAPI
-
-from models.router_model import User, Workspace
-from models.ledger_model import SQLAccount
+from dojo.ledger.ledger_api import AccountType, Ledger, LedgerAccount, LedgerSide, LedgerAccountTransaction, LedgerLogicalTransaction
+from dojo.ledger.ledger_tx_builder import LedgerTransactionBuilder
+from dojo.ledger.sql_ledger import SQLLedgerAPI
+from dojo.models.router_model import User, Workspace
+from dojo.models.ledger_model import SQLAccount
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -127,7 +128,7 @@ class LedgerManager:
             The workspace's balance account or None if not found
         """
         # Workspace account code format: "workspace_{workspace.id}_balance"
-        account_code = f"workspace_{workspace.id}_balance"
+        account_code = f"workspace_{_id_str(workspace.id)}_balance"
         #logging.warning(f"account_code: {account_code}")
         
         await self.sql_ledger_api.begin_transaction()
@@ -231,9 +232,9 @@ class LedgerManager:
         
         # Create workspace balance account (Liability account for unearned revenue)
         workspace_balance_account = LedgerAccount(
-            id=str(ULID()),
-            name=f"Unearned Revenue - Workspace {workspace.id}",
-            account_code=f"workspace_{workspace.id}_balance",
+            id=generate_ulid(),
+            name=f"Unearned Revenue - Workspace {_id_str(workspace.id)}",
+            account_code=f"workspace_{_id_str(workspace.id)}_balance",
             account_type=AccountType.LIABILITY,
             side=LedgerSide.CREDIT,
             workspace_id=workspace_id,
@@ -277,7 +278,7 @@ class LedgerManager:
         if account_type == "liability":
             # Create liability account for provider payable
             provider_account = LedgerAccount(
-                id=str(ULID()),
+                id=generate_ulid(),
                 name=f"Payable - {account_code}",
                 account_code=account_code,
                 account_type=AccountType.LIABILITY,
@@ -374,7 +375,7 @@ class LedgerManager:
         #logging.warning(f"Begin processing purchase - amount:{amount} final:{final_amount} model:{model}")
 
         # Create transaction builder for purchase (debit workspace balance, credit revenue)
-        workspace_balance_code = f"workspace_{workspace.id}_balance"
+        workspace_balance_code = f"workspace_{_id_str(workspace.id)}_balance"
         purchase_tx_builder = await self.create_transaction_builder([workspace_balance_code, "revenue_product_a"])
         
         # Execute the purchase transaction using the purchase method
@@ -382,7 +383,7 @@ class LedgerManager:
         purchase_transaction = await purchase_tx_builder.purchase(
             user_id=workspace.owner_id,
             product_amounts={"product_a": final_amount},
-            name=f"API Usage - {workspace.id}",
+            name=f"API Usage - {_id_str(workspace.id)}",
             description=description,
             workspace_balance_code=workspace_balance_code
         )
@@ -398,7 +399,7 @@ class LedgerManager:
         expense_transaction = await expense_tx_builder.expense(
             amount=amount,
             expense_type="api_cost",
-            name=f"API Cost - {workspace.id}",
+            name=f"API Cost - {_id_str(workspace.id)}",
             description=f"Cost for {model}",
             user_id=workspace.owner_id
         )

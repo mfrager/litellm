@@ -18,7 +18,7 @@ from litellm.integrations.custom_logger import CustomLogger
 dojo_path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(dojo_path))
 
-from models.router_model import Token, Workspace, User
+from dojo.models.router_model import Token, Workspace, User
 from .accounts import LedgerManager
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:\t%(message)s")

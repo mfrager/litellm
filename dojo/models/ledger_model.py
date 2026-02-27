@@ -4,16 +4,15 @@ SQL Ledger Schema
 
 import uuid
 import json
-from ulid import ULID
 from decimal import Decimal
 from datetime import datetime, timezone
 from typing import List, Optional, Union, Dict, Any
-from sqlalchemy import Column, Integer, String, Text, Boolean, BigInteger, DateTime, LargeBinary, ForeignKey, Index, func
+from sqlalchemy import Column, Integer, String, Text, Boolean, BigInteger, DateTime, ForeignKey, Index, func
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 
 from .functions import generate_ulid, generate_utcnow
-from .base import Base
+from .base import Base, ULID_BINARY
 from .common import CommonBase
 
 
@@ -21,19 +20,19 @@ class SQLAccount(CommonBase, Base):
   """SQLAlchemy model for ledger accounts"""
   __tablename__ = 'ledger_accounts'
   
-  id = Column(String(26), primary_key=True, default=generate_ulid)
-  name = Column(String(255), nullable=False)
-  account_code = Column(String(255), nullable=False, unique=True)  # Unique account code
-  account_type = Column(String(32), nullable=False)     # AccountType enum
-  side = Column(String(16), nullable=False)             # LedgerSide enum
-  workspace_id = Column(String(26), nullable=True)
-  is_promo = Column(Boolean, default=False)
-  decimals = Column(Integer, default=10)
-  currency = Column(String(8), default='USD')
-  details = Column(Text, nullable=True)                 # JSON string
-  history = Column(Boolean, default=True)
-  balance = Column(BigInteger, default=0)               # Current balance
-  last_tx = Column(String(26), nullable=True)           # Last transaction ID
+  id = Column[bytes](ULID_BINARY, primary_key=True, default=generate_ulid)
+  name = Column[str](String(255), nullable=False)
+  account_code = Column[str](String(255), nullable=False, unique=True)  # Unique account code
+  account_type = Column[str](String(32), nullable=False)     # AccountType enum
+  side = Column[str](String(16), nullable=False)             # LedgerSide enum
+  workspace_id = Column[bytes](ULID_BINARY, nullable=True)
+  is_promo = Column[bool](Boolean, default=False)
+  decimals = Column[int](Integer, default=10)
+  currency = Column[str](String(8), default='USD')
+  details = Column[str](Text, nullable=True)                 # JSON string
+  history = Column[bool](Boolean, default=True)
+  balance = Column[int](BigInteger, default=0)               # Current balance
+  last_tx = Column[bytes](ULID_BINARY, nullable=True)           # Last transaction ID
 
   # Indexes for optimal query performance
   __table_args__ = (
@@ -56,13 +55,13 @@ class SQLAccountBalance(Base):
   """SQLAlchemy model for account balance history (populated by triggers)"""
   __tablename__ = 'ledger_account_log'
   
-  id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
-  account_id = Column(String(26), ForeignKey('ledger_accounts.id'), nullable=False)
-  last_tx = Column(String(26), nullable=True)                         # Previous transaction ID
-  last_balance = Column(BigInteger, nullable=False)                   # Previous balance
-  this_tx = Column(String(26), nullable=True)                         # Current transaction ID
-  balance = Column(BigInteger, nullable=False)                        # Current balance
-  ts_created = Column(DateTime, server_default=func.now())
+  id = Column[int](BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+  account_id = Column[bytes](ULID_BINARY, ForeignKey('ledger_accounts.id'), nullable=False)
+  last_tx = Column[bytes](ULID_BINARY, nullable=True)                         # Previous transaction ID
+  last_balance = Column[int](BigInteger, nullable=False)                   # Previous balance
+  this_tx = Column[bytes](ULID_BINARY, nullable=True)                         # Current transaction ID
+  balance = Column[int](BigInteger, nullable=False)                        # Current balance
+  ts_created = Column[datetime](DateTime, server_default=func.now())
 
   # Indexes for optimal query performance
   __table_args__ = (
@@ -82,13 +81,13 @@ class SQLAccountTransaction(Base):
   """SQLAlchemy model for account transactions (triggers balance updates)"""
   __tablename__ = 'ledger_account_transaction'
   
-  id = Column(String(26), primary_key=True)
-  src_id = Column(String(26), ForeignKey('ledger_accounts.id'), nullable=False)   # Source (credit) account
-  dst_id = Column(String(26), ForeignKey('ledger_accounts.id'), nullable=False)   # Destination (debit) account
-  amount = Column(BigInteger, nullable=False)                                     # Transfer amount
-  ts_created = Column(DateTime, default=generate_utcnow, nullable=False)
-  transaction_id = Column(String(26), ForeignKey('ledger_transactions.id'), nullable=True)
-  description = Column(Text, nullable=True)
+  id = Column[bytes](ULID_BINARY, primary_key=True)
+  src_id = Column[bytes](ULID_BINARY, ForeignKey('ledger_accounts.id'), nullable=False)   # Source (credit) account
+  dst_id = Column[bytes](ULID_BINARY, ForeignKey('ledger_accounts.id'), nullable=False)   # Destination (debit) account
+  amount = Column[int](BigInteger, nullable=False)                                     # Transfer amount
+  ts_created = Column[datetime](DateTime, default=generate_utcnow, nullable=False)
+  transaction_id = Column[bytes](ULID_BINARY, ForeignKey('ledger_transactions.id'), nullable=True)
+  description = Column[str](Text, nullable=True)
 
   # Indexes for optimal query performance
   __table_args__ = (
@@ -108,11 +107,11 @@ class SQLJournalEntry(Base):
   """SQLAlchemy model for journal entries"""
   __tablename__ = 'ledger_journal_entries'
   
-  id = Column(String(26), primary_key=True)
-  account_id = Column(String(26), ForeignKey('ledger_accounts.id'), nullable=False)
+  id = Column(ULID_BINARY, primary_key=True)
+  account_id = Column(ULID_BINARY, ForeignKey('ledger_accounts.id'), nullable=False)
   debit = Column(BigInteger, nullable=True)
   credit = Column(BigInteger, nullable=True)
-  transaction_id = Column(String(26), ForeignKey('ledger_transactions.id'), nullable=True)
+  transaction_id = Column(ULID_BINARY, ForeignKey('ledger_transactions.id'), nullable=True)
   description = Column(Text, nullable=True)
   ts_created = Column(DateTime, default=generate_utcnow, nullable=False)
 
@@ -136,13 +135,13 @@ class SQLTransaction(Base):
   """SQLAlchemy model for transactions"""
   __tablename__ = 'ledger_transactions'
   
-  id = Column(String(26), primary_key=True)
-  transaction_type = Column(String(32), nullable=False)   # TransactionType enum
-  user_id = Column(String(26), nullable=True)
-  reference = Column(String(255), nullable=True)
-  description = Column(Text, nullable=True)
-  details = Column(Text, nullable=True)                   # JSON string
-  ts_created = Column(DateTime, default=generate_utcnow, nullable=False)
+  id = Column[bytes](ULID_BINARY, primary_key=True)
+  transaction_type = Column[str](String(32), nullable=False)   # TransactionType enum
+  user_id = Column[bytes](ULID_BINARY, nullable=True)
+  reference = Column[str](String(255), nullable=True)
+  description = Column[str](Text, nullable=True)
+  details = Column[str](Text, nullable=True)                   # JSON string
+  ts_created = Column[datetime](DateTime, default=generate_utcnow, nullable=False)
   
   # Relationships
   journal_entries = relationship("SQLJournalEntry", backref="transaction")

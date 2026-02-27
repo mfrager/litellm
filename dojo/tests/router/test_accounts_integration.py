@@ -9,32 +9,86 @@ import pytest
 import pytest_asyncio
 from decimal import Decimal
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
 
-load_dotenv('../../../.env')
-sys.path.append('../..')
+# Add project root so "dojo" package can be imported
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+load_dotenv(os.path.join(_root, '.env'))
 
-# Import the modules
-from models.router_model import User, Workspace, Token, Base
-from models.ledger_model import SQLAccount, Base as LedgerBase
-from ledger.ledger_api import Ledger
-from ledger.sql_ledger import SQLLedgerAPI
-from router.accounts import LedgerManager
+from dojo.models.router_model import User, Workspace, Token, Base
+from dojo.models.ledger_model import SQLAccount, Base as LedgerBase
+from dojo.models.functions import generate_ulid
+from dojo.ledger.ledger_api import (
+    Ledger,
+    LedgerAccount,
+    LedgerAccountTransaction,
+    AccountType,
+    LedgerSide,
+)
+from dojo.ledger.sql_ledger import SQLLedgerAPI
+from dojo.router.accounts import LedgerManager
 
 # Constants
 DECIMALS = 10
 SCALE = Decimal(10) ** DECIMALS
 
+# Internal accounts required by LedgerManager (must exist in DB)
+INTERNAL_ACCOUNT_DEFS = [
+    {"account_code": "internal_cc_processor", "name": "Internal CC Processor Account", "account_type": AccountType.ASSET, "side": LedgerSide.DEBIT},
+    {"account_code": "internal_cash", "name": "Internal Cash Account", "account_type": AccountType.ASSET, "side": LedgerSide.DEBIT},
+    {"account_code": "internal_revenue", "name": "Internal Revenue Account", "account_type": AccountType.INCOME, "side": LedgerSide.CREDIT},
+    {"account_code": "internal_cost", "name": "Internal Cost Account", "account_type": AccountType.EXPENSE, "side": LedgerSide.DEBIT},
+    {"account_code": "internal_payable", "name": "Internal Payable Account", "account_type": AccountType.LIABILITY, "side": LedgerSide.CREDIT},
+]
+
+
+async def ensure_internal_accounts(sql_ledger_api: SQLLedgerAPI) -> None:
+    """Create the five internal accounts if they do not exist (required by LedgerManager)."""
+    await sql_ledger_api.begin_transaction()
+    try:
+        for defn in INTERNAL_ACCOUNT_DEFS:
+            code = defn["account_code"]
+            existing = await sql_ledger_api.query_accounts({"account_code": code})
+            if existing:
+                continue
+            account = LedgerAccount(
+                id=generate_ulid(),
+                name=defn["name"],
+                account_code=code,
+                account_type=defn["account_type"],
+                side=defn["side"],
+                workspace_id=None,
+                is_promo=False,
+                decimals=DECIMALS,
+                currency="USD",
+                details={},
+                history=True,
+            )
+            await sql_ledger_api.create_accounts([LedgerAccountTransaction(accounts=[account])])
+    finally:
+        await sql_ledger_api.end_transaction()
+
+
 @pytest_asyncio.fixture(scope="function")
 async def database_setup():
     """Set up MySQL database and return session with ledger API."""
-    # Get MySQL database URL from environment
-    database_url = os.environ['DATABASE_ASYNC_TEST']
-    
+    database_url = os.environ.get('DATABASE_ASYNC_TEST')
+    if not database_url or 'mysql' not in database_url:
+        pytest.skip("DATABASE_ASYNC_TEST (MySQL) not set or not MySQL")
+    try:
+        check_engine = create_async_engine(database_url, echo=False)
+        async with check_engine.begin() as conn:
+            await conn.execute(text("SELECT 1"))
+        await check_engine.dispose()
+    except OperationalError as e:
+        pytest.skip(f"MySQL server not reachable: {e}")
     # Convert async URL to sync URL for SQLAlchemy session
     sync_url = database_url.replace('mysql+aiomysql://', 'mysql+pymysql://')
-    
     # Create MySQL database engine
     engine = create_engine(sync_url, echo=False)
     
@@ -48,11 +102,12 @@ async def database_setup():
         accounts=[],
         has_journal=True,
         has_transactions=True,
-        config={"currency": "USD", "decimals": DECIMALS}
+        config={"currency": "USD", "decimals": DECIMALS, "balance_via_trigger": True}
     )
     
     # Create SQL Ledger API
     sql_ledger_api = SQLLedgerAPI(ledger_config, database_url)
+    await ensure_internal_accounts(sql_ledger_api)
     
     yield session, sql_ledger_api
     
@@ -132,8 +187,8 @@ async def test_ledger_manager(sql_ledger_api):
 
 @pytest.mark.asyncio
 async def test_user_balance_operations(sql_ledger_api):
-    """Test user balance account creation and checking."""
-    print("\n🧪 Testing User Balance Operations...")
+    """Test workspace balance account creation and checking."""
+    print("\n🧪 Testing User/Workspace Balance Operations...")
     
     # Get session from sql_ledger_api
     await sql_ledger_api.begin_transaction()
@@ -156,24 +211,24 @@ async def test_user_balance_operations(sql_ledger_api):
             owner_id="test_user_123"
         )
         
-        # Test creating user balance account
-        balance_account = await ledger_manager.create_user_balance_account(test_user, test_workspace)
+        # Test creating workspace balance account (LedgerManager uses workspace-scoped balance)
+        balance_account = await ledger_manager.create_workspace_balance_account(test_workspace)
         assert balance_account is not None, "Should create balance account"
-        assert balance_account.account_code == f"user_{test_user.id}_balance", "Account code should match user ID"
+        assert balance_account.account_code == f"workspace_{test_workspace.id}_balance", "Account code should match workspace ID"
         assert balance_account.account_type.value == "liability", "Should be liability account"
         assert balance_account.side.value == "credit", "Should be credit side"
         
         print(f"   ✅ Created balance account: {balance_account.account_code}")
         
-        # Test getting user balance account
-        retrieved_account = await ledger_manager.get_user_balance_account(test_user, test_workspace)
+        # Test getting workspace balance account
+        retrieved_account = await ledger_manager.get_workspace_balance_account(test_workspace)
         assert retrieved_account is not None, "Should retrieve balance account"
         assert retrieved_account.id == balance_account.id, "Should be the same account"
         
         print(f"   ✅ Retrieved balance account: {retrieved_account.account_code}")
         
         # Test balance checking (should fail due to zero balance)
-        has_sufficient, current_balance, error_msg = await ledger_manager.check_user_balance(test_user, test_workspace)
+        has_sufficient, current_balance, error_msg = await ledger_manager.check_workspace_balance(test_workspace)
         assert not has_sufficient, "Should not have sufficient balance initially"
         assert current_balance == Decimal("0"), "Initial balance should be zero"
         assert error_msg is not None, "Should have error message"

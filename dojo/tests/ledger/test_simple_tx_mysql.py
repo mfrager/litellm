@@ -9,13 +9,17 @@ with MySQL database.
 import os
 import sys
 import pytest
+import pytest_asyncio
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 
-sys.path.append('../..')
-load_dotenv('../../../.env')
+# Add project root so "dojo" package can be imported
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+load_dotenv(os.path.join(_root, '.env'))
 
-from ledger.ledger_api import (
+from dojo.ledger.ledger_api import (
     Ledger,
     LedgerAccount,
     LedgerAccountTransaction,
@@ -25,8 +29,12 @@ from ledger.ledger_api import (
     LedgerSide,
     generate_account_code,
 )
-from ledger.sql_ledger import SQLLedgerAPI
-from ledger.ledger_tx_builder import LedgerTransactionBuilder
+from dojo.ledger.sql_ledger import SQLLedgerAPI
+from dojo.ledger.ledger_tx_builder import LedgerTransactionBuilder
+from dojo.models.functions import generate_ulid
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import create_async_engine
 
 
 class TestSimpleTransaction:
@@ -35,44 +43,82 @@ class TestSimpleTransaction:
     @pytest.fixture
     def database_url(self):
         """Fixture providing database URL for testing."""
-        return os.environ['DATABASE_ASYNC_TEST']
-    
+        url = os.environ.get('DATABASE_ASYNC_TEST')
+        if not url or 'mysql' not in url:
+            pytest.skip("DATABASE_ASYNC_TEST (MySQL) not set or not MySQL")
+        return url
+
+    @pytest_asyncio.fixture
+    async def check_mysql(self, database_url):
+        """Skip entire test class if MySQL is not reachable."""
+        try:
+            engine = create_async_engine(database_url, echo=False)
+            async with engine.begin() as conn:
+                await conn.execute(text("SELECT 1"))
+            await engine.dispose()
+        except OperationalError as e:
+            pytest.skip(f"MySQL server not reachable: {e}")
+
     @pytest.fixture
-    def sql_ledger_api(self, database_url):
+    def sql_ledger_api(self, database_url, check_mysql):
         """Fixture providing SQLLedgerAPI instance."""
         ledger = Ledger(
             id=1,
             accounts=[],
             has_journal=True,
             has_transactions=True,
-            config={"test": True}
+            config={"test": True, "balance_via_trigger": True}  # MySQL uses triggers for balance updates
         )
         return SQLLedgerAPI(ledger, database_url)
     
     @pytest.fixture
-    def tx_builder(self):
-        """Fixture providing transaction builder with test account IDs."""
+    def unique_suffix(self):
+        """Unique suffix per test run to avoid duplicate account_code in shared MySQL."""
+        return generate_ulid().hex()[:12]
+
+    @pytest.fixture
+    def account_id_bytes(self):
+        """Binary ULID mapping for test accounts."""
+        return {
+            "cash": generate_ulid(),
+            "ar_processor": generate_ulid(),
+            "unearned_revenue": generate_ulid(),
+            "revenue_product_a": generate_ulid(),
+            "service_fees_expense": generate_ulid(),
+            "tax_payable": generate_ulid(),
+            "promo_expense": generate_ulid(),
+            "promo_liability": generate_ulid(),
+            "promo_revenue_product_a": generate_ulid(),
+        }
+
+    @pytest.fixture
+    def tx_builder(self, account_id_bytes):
+        """Fixture providing transaction builder with test account IDs (binary ULIDs)."""
+        ids = account_id_bytes
         account_ids = {
-            "cash_bank": "cash",
-            "ar_processor": "ar_processor", 
-            "unearned_revenue": "unearned_revenue",
-            "revenue_product_a": "revenue_product_a",
-            "service_fees_expense": "service_fees_expense",
-            "tax_payable": "tax_payable",
-            "promo_expense": "promo_expense",
-            "promo_liability": "promo_liability",
-            "promo_revenue_product_a": "promo_revenue_product_a"
+            "cash_bank": ids["cash"],
+            "ar_processor": ids["ar_processor"],
+            "unearned_revenue": ids["unearned_revenue"],
+            "revenue_product_a": ids["revenue_product_a"],
+            "service_fees_expense": ids["service_fees_expense"],
+            "tax_payable": ids["tax_payable"],
+            "promo_expense": ids["promo_expense"],
+            "promo_liability": ids["promo_liability"],
+            "promo_revenue_product_a": ids["promo_revenue_product_a"],
         }
         return LedgerTransactionBuilder(account_ids)
-    
+
     @pytest.fixture
-    def test_accounts(self):
-        """Create test accounts for the transaction builder."""
+    def test_accounts(self, account_id_bytes, unique_suffix):
+        """Create test accounts for the transaction builder (binary ULIDs)."""
+        ids = account_id_bytes
+        def code(name, ws=1):
+            return f"{generate_account_code(name, ws)}_{unique_suffix}"
         return [
             LedgerAccount(
-                id="cash",
+                id=ids["cash"],
                 name="Cash Bank",
-                account_code=generate_account_code("Cash Bank", 1),
+                account_code=code("Cash Bank"),
                 account_type=AccountType.ASSET,
                 side=LedgerSide.DEBIT,
                 workspace_id=1,
@@ -83,9 +129,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="ar_processor",
+                id=ids["ar_processor"],
                 name="AR Processor",
-                account_code=generate_account_code("AR Processor", 1),
+                account_code=code("AR Processor"),
                 account_type=AccountType.ASSET,
                 side=LedgerSide.DEBIT,
                 workspace_id=1,
@@ -96,9 +142,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="unearned_revenue",
+                id=ids["unearned_revenue"],
                 name="Unearned Revenue",
-                account_code=generate_account_code("Unearned Revenue", 1),
+                account_code=code("Unearned Revenue"),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
                 workspace_id=1,
@@ -109,9 +155,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="revenue_product_a",
+                id=ids["revenue_product_a"],
                 name="Product A Revenue",
-                account_code=generate_account_code("Product A Revenue", 1),
+                account_code=code("Product A Revenue"),
                 account_type=AccountType.INCOME,
                 side=LedgerSide.CREDIT,
                 workspace_id=1,
@@ -122,9 +168,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="service_fees_expense",
+                id=ids["service_fees_expense"],
                 name="Service Fees Expense",
-                account_code=generate_account_code("Service Fees Expense", 1),
+                account_code=code("Service Fees Expense"),
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
                 workspace_id=1,
@@ -135,9 +181,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="tax_payable",
+                id=ids["tax_payable"],
                 name="Tax Payable",
-                account_code=generate_account_code("Tax Payable", 1),
+                account_code=code("Tax Payable"),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
                 workspace_id=1,
@@ -148,9 +194,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="promo_expense",
+                id=ids["promo_expense"],
                 name="Promo Expense",
-                account_code=generate_account_code("Promo Expense", 1),
+                account_code=code("Promo Expense"),
                 account_type=AccountType.EXPENSE,
                 side=LedgerSide.DEBIT,
                 workspace_id=1,
@@ -161,9 +207,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="promo_liability",
+                id=ids["promo_liability"],
                 name="Promo Liability",
-                account_code=generate_account_code("Promo Liability", 1),
+                account_code=code("Promo Liability"),
                 account_type=AccountType.LIABILITY,
                 side=LedgerSide.CREDIT,
                 workspace_id=1,
@@ -174,9 +220,9 @@ class TestSimpleTransaction:
                 history=True
             ),
             LedgerAccount(
-                id="promo_revenue_product_a",
+                id=ids["promo_revenue_product_a"],
                 name="Promo Revenue Product A",
-                account_code=generate_account_code("Promo Revenue Product A", 1),
+                account_code=code("Promo Revenue Product A"),
                 account_type=AccountType.INCOME,
                 side=LedgerSide.CREDIT,
                 workspace_id=1,
@@ -219,24 +265,28 @@ class TestSimpleTransaction:
             ar_entry = payment_tx.entries[0]
             revenue_entry = payment_tx.entries[1]
             
-            assert ar_entry.account_id == "ar_processor"
-            assert ar_entry.debit == 100000000  # $100.00 in micro units
+            # LedgerTransactionBuilder uses 10 decimal places (SCALE=10^10)
+            amount_micro = 100 * 10**10  # $100.00 in micro units
+            assert ar_entry.account_id == tx_builder.account_ids["ar_processor"]
+            assert ar_entry.debit == amount_micro
             assert ar_entry.credit == 0
-            
-            assert revenue_entry.account_id == "unearned_revenue"
+
+            assert revenue_entry.account_id == tx_builder.account_ids["unearned_revenue"]
             assert revenue_entry.debit == 0
-            assert revenue_entry.credit == 100000000  # $100.00 in micro units
-            
+            assert revenue_entry.credit == amount_micro
+
             # Verify transfer
             transfer = payment_tx.transfers[0]
-            assert transfer.debit_account_id == "ar_processor"
-            assert transfer.credit_account_id == "unearned_revenue"
-            assert transfer.amount == 100000000  # $100.00 in micro units
+            assert transfer.debit_account_id == tx_builder.account_ids["ar_processor"]
+            assert transfer.credit_account_id == tx_builder.account_ids["unearned_revenue"]
+            assert transfer.amount == amount_micro
             
-            # Get initial balances before the transaction
+            # Get initial balances before the transaction (use account IDs, not key names)
+            ar_id = tx_builder.account_ids["ar_processor"]
+            unearned_id = tx_builder.account_ids["unearned_revenue"]
             await sql_ledger_api.begin_transaction()
-            initial_ar_balance = await sql_ledger_api.get_account_balance("ar_processor")
-            initial_revenue_balance = await sql_ledger_api.get_account_balance("unearned_revenue")
+            initial_ar_balance = await sql_ledger_api.get_account_balance(ar_id)
+            initial_revenue_balance = await sql_ledger_api.get_account_balance(unearned_id)
             await sql_ledger_api.end_transaction()
             
             # Create the transaction in the database
@@ -247,13 +297,13 @@ class TestSimpleTransaction:
             
             # Verify accounts were created and balances updated
             await sql_ledger_api.begin_transaction()
-            final_ar_balance = await sql_ledger_api.get_account_balance("ar_processor")
-            final_revenue_balance = await sql_ledger_api.get_account_balance("unearned_revenue")
+            final_ar_balance = await sql_ledger_api.get_account_balance(ar_id)
+            final_revenue_balance = await sql_ledger_api.get_account_balance(unearned_id)
             await sql_ledger_api.end_transaction()
             
             # Calculate expected balances (initial + transaction amount)
-            expected_ar_balance = initial_ar_balance + 100000000  # Add $100.00 debit
-            expected_revenue_balance = initial_revenue_balance - 100000000  # Subtract $100.00 credit (liability)
+            expected_ar_balance = initial_ar_balance + amount_micro  # Add $100.00 debit
+            expected_revenue_balance = initial_revenue_balance - amount_micro  # Subtract $100.00 credit (liability)
             
             # Check balances (should be updated by triggers)
             assert final_ar_balance == expected_ar_balance, f"AR balance: expected {expected_ar_balance}, got {final_ar_balance}"
