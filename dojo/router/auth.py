@@ -25,23 +25,23 @@ class RouterAuth:
         """Create a new user instance with an associated workspace."""
         user_id = generate_ulid()
         workspace_id = generate_ulid()
-        
+
         workspace = Workspace(
-            id=workspace_id,
-            owner_id=user_id
+            id=workspace_id,  # pyright: ignore[reportCallIssue]
+            owner_id=user_id,  # pyright: ignore[reportCallIssue]
         )
-        
+
         user = User(
-            id=user_id,
-            workspace_id=workspace_id,
-            email=email,
-            keycloak_uuid=keycloak_uuid,
-            first_name=first_name,
-            last_name=last_name,
-            phone=phone,
-            company=company,
-            is_active=is_active,
-            last_login=last_login
+            id=user_id,  # pyright: ignore[reportCallIssue]
+            workspace_id=workspace_id,  # pyright: ignore[reportCallIssue]
+            email=email,  # pyright: ignore[reportCallIssue]
+            keycloak_uuid=keycloak_uuid,  # pyright: ignore[reportCallIssue]
+            first_name=first_name,  # pyright: ignore[reportCallIssue]
+            last_name=last_name,  # pyright: ignore[reportCallIssue]
+            phone=phone,  # pyright: ignore[reportCallIssue]
+            company=company,  # pyright: ignore[reportCallIssue]
+            is_active=is_active,  # pyright: ignore[reportCallIssue]
+            last_login=last_login,  # pyright: ignore[reportCallIssue]
         )
         
         return user, workspace
@@ -52,7 +52,7 @@ class RouterAuth:
         token = "".join(secrets.choice(alphabet) for _ in range(64))
         ws_id: bytes = ULID.from_str(workspace_id).bytes if isinstance(workspace_id, str) else workspace_id
         return Token(
-            id=generate_ulid(),
-            workspace_id=ws_id,
-            token=token,
+            id=generate_ulid(),  # pyright: ignore[reportCallIssue]
+            workspace_id=ws_id,  # pyright: ignore[reportCallIssue]
+            token=token,  # pyright: ignore[reportCallIssue]
         )
