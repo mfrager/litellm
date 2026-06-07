@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 # Load .env from project root so DATABASE_ASYNC_URL etc. are available
 load_dotenv(str(_PROJECT_ROOT / ".env"))
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import sessionmaker
 
 from dojo.models.router_model import Model
@@ -306,6 +306,188 @@ def _build_models_from_config_and_provider(
     return rows
 
 
+def _config_model_names(config_models: list[dict]) -> set[str]:
+    return {name for m in config_models if (name := m.get("model_name"))}
+
+
+def _remote_db_models_not_in_config(
+    session,
+    config_model_names: set[str],
+) -> list[str]:
+    """Return active remote model_ids present in DB but missing from config."""
+    db_models = session.execute(
+        select(Model).where(Model.is_active == True)  # noqa: E712
+    ).scalars().all()
+    missing: list[str] = []
+    for row in db_models:
+        model_id = str(row.model_id)
+        if _is_local_provider_model_id(model_id):
+            continue
+        if str(row.model_group) != "remote":
+            continue
+        if model_id not in config_model_names:
+            missing.append(model_id)
+    return sorted(missing)
+
+
+def _provider_model_ids(prefix: str, provider_models: list[ProviderModel]) -> set[str]:
+    """Build model_id set from provider API results for a given prefix."""
+    stem = prefix.rstrip("/")
+    ids: set[str] = set()
+    for pm in provider_models:
+        if not pm.is_llm:
+            continue
+        ids.add(f"{stem}/{_trim_model_key(pm.key)}")
+    return ids
+
+
+def _local_db_models_not_on_provider(
+    session,
+    prefix: str,
+    provider_model_ids: set[str],
+) -> list[str]:
+    """Return active local model_ids under prefix that are absent from the provider API."""
+    db_models = session.execute(
+        select(Model.model_id).where(
+            Model.is_active == True,  # noqa: E712
+            Model.model_id.startswith(prefix),  # type: ignore[arg-type]
+        )
+    ).scalars().all()
+    stale = [
+        str(model_id)
+        for model_id in db_models
+        if str(model_id) not in provider_model_ids
+    ]
+    return sorted(stale)
+
+
+def _fetch_provider_models_by_prefix(
+    provider_specs: list[tuple[str, str, str]],
+) -> dict[str, list[ProviderModel] | None]:
+    """
+    Fetch LLM models per provider prefix.
+
+    Returns prefix -> model list, or None when the provider API is unavailable.
+    """
+    by_prefix: dict[str, list[ProviderModel] | None] = {}
+    for prefix, provider_url, _base_url in provider_specs:
+        try:
+            client = LLMProviderClient(base_url=provider_url)
+            by_prefix[prefix] = client.list_models(type_filter="llm")
+        except Exception as e:
+            print(
+                f"Provider at {provider_url} not available ({e}); "
+                f"cannot check stale local models for prefix {prefix!r}"
+            )
+            by_prefix[prefix] = None
+    return by_prefix
+
+
+def _collect_local_stale_model_ids(
+    session,
+    provider_specs: list[tuple[str, str, str]],
+    provider_models_by_prefix: dict[str, list[ProviderModel] | None],
+) -> list[str]:
+    stale: set[str] = set()
+    for prefix, _provider_url, _base_url in provider_specs:
+        provider_models = provider_models_by_prefix.get(prefix)
+        if provider_models is None:
+            continue
+        provider_ids = _provider_model_ids(prefix, provider_models)
+        stale.update(_local_db_models_not_on_provider(session, prefix, provider_ids))
+    return sorted(stale)
+
+
+def _purge_model_ids(session, model_ids: list[str]) -> int:
+    if not model_ids:
+        return 0
+    result = session.execute(delete(Model).where(Model.model_id.in_(model_ids)))
+    return result.rowcount or 0
+
+
+def _run_remote_stale_audit(
+    *,
+    config_path: Path,
+    database_url: str | None,
+    purge: bool,
+) -> int:
+    if not config_path.exists():
+        print(f"Config not found: {config_path}")
+        return 1
+
+    proxy_config = ProxyConfigManager(output_config_path=config_path)
+    config_model_names = _config_model_names(proxy_config.get_model_list(config_path))
+    db_url = database_url or _sync_database_url()
+    engine = create_engine(db_url, echo=False)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as session:
+        stale = _remote_db_models_not_in_config(session, config_model_names)
+        print(f"Remote models in DB but not in {config_path.name}: {len(stale)}")
+        if stale:
+            for model_id in stale:
+                print(f"  {model_id}")
+        else:
+            print("  (none)")
+
+        if purge and stale:
+            deleted = _purge_model_ids(session, stale)
+            session.commit()
+            print(f"Purged {deleted} remote model row(s) from DB")
+        elif purge:
+            print("Nothing to purge")
+
+    return 0
+
+
+def _run_local_stale_audit(
+    *,
+    provider_specs: list[tuple[str, str, str]],
+    database_url: str | None,
+    purge: bool,
+) -> int:
+    if not provider_specs:
+        print("Error: --provider is required for local stale model checks")
+        return 1
+
+    provider_models_by_prefix = _fetch_provider_models_by_prefix(provider_specs)
+    if all(models is None for models in provider_models_by_prefix.values()):
+        print("Error: no provider APIs available; local stale check aborted")
+        return 1
+
+    db_url = database_url or _sync_database_url()
+    engine = create_engine(db_url, echo=False)
+    Session = sessionmaker(bind=engine)
+
+    with Session() as session:
+        stale = _collect_local_stale_model_ids(
+            session, provider_specs, provider_models_by_prefix
+        )
+        print("Local models in DB but not on provider API: {}".format(len(stale)))
+        if stale:
+            for model_id in stale:
+                print(f"  {model_id}")
+        else:
+            print("  (none)")
+
+        if purge and stale:
+            deleted = _purge_model_ids(session, stale)
+            session.commit()
+            print(f"Purged {deleted} local model row(s) from DB")
+        elif purge:
+            print("Nothing to purge")
+
+    return 0
+
+
+def _parse_provider_specs(provider_args: list[str] | None) -> list[tuple[str, str, str]]:
+    specs: list[tuple[str, str, str]] = []
+    if provider_args:
+        for spec in provider_args:
+            specs.append(_parse_provider_spec(spec))
+    return specs
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Populate router_model table from config and/or LLM provider API"
@@ -362,125 +544,181 @@ def main() -> int:
         default=None,
         help="Path to base YAML (default: litellm_config_base.yaml); non-prefix model_list + litellm_settings, general_settings",
     )
+    parser.add_argument(
+        "--list-remote-missing-from-config",
+        action="store_true",
+        help="List active remote DB models missing from litellm_config.yaml",
+    )
+    parser.add_argument(
+        "--purge-remote-missing-from-config",
+        action="store_true",
+        help="Delete active remote DB models missing from litellm_config.yaml",
+    )
+    parser.add_argument(
+        "--list-local-missing-from-provider",
+        action="store_true",
+        help="List active local DB models missing from provider API (--provider required)",
+    )
+    parser.add_argument(
+        "--purge-local-missing-from-provider",
+        action="store_true",
+        help="Delete active local DB models missing from provider API (--provider required)",
+    )
     args = parser.parse_args()
 
-    # Parse provider specs: "<prefix>,<base_url>,<provider_url>" (1–3 parts), zero or more
-    provider_specs: list[tuple[str, str, str]] = []
-    if args.provider:
-        for spec in args.provider:
-            provider_specs.append(_parse_provider_spec(spec))
-
-    # 1) Proxy config: base YAML and optional generate
-    base_config_path = args.base_config or _PROJECT_ROOT / "litellm_config_base.yaml"
     output_config_path = args.config or _PROJECT_ROOT / "litellm_config.yaml"
-    proxy_config = ProxyConfigManager(base_config_path=base_config_path, output_config_path=output_config_path)
-    if args.generate_config:
-        proxy_config.generate_from_template(
-            template_path=args.template,
-            output_path=output_config_path,
-        )
-        print(f"Generated config at {output_config_path}")
-    # Load model_list from base (or full config if base missing) for populating DB
-    config_models = proxy_config.get_model_list(base_config_path if base_config_path.exists() else output_config_path)
-    print(f"Loaded {len(config_models)} models from config")
+    provider_specs = _parse_provider_specs(args.provider)
 
-    # 2) Build rows from config, then merge each provider combo one by one
-    rows = _build_models_from_config_only(config_models)
-    provider_models_by_prefix: dict[str, list[ProviderModel]] = {}
-    for prefix, provider_url, base_url in provider_specs:
-        try:
-            client = LLMProviderClient(base_url=provider_url)
-            provider_models = client.list_models(type_filter="llm")
-            provider_models_by_prefix[prefix] = provider_models
-            _add_provider_models(rows, prefix, provider_models, base_url)
-            print(f"Loaded {len(provider_models)} LLM models from {provider_url} (prefix {prefix!r}, base_url {base_url})")
-        except Exception as e:
-            print(f"Provider at {provider_url} not available ({e}); skipping prefix {prefix!r}")
-            provider_models_by_prefix[prefix] = []
-    print(f"Merged {len(rows)} model rows to upsert")
+    remote_audit = (
+        args.list_remote_missing_from_config or args.purge_remote_missing_from_config
+    )
+    local_audit = (
+        args.list_local_missing_from_provider or args.purge_local_missing_from_provider
+    )
+    populate_requested = (
+        bool(args.provider)
+        or args.write_config
+        or args.generate_config
+        or args.dry_run
+        or not (remote_audit or local_audit)
+    )
 
-    if args.dry_run:
-        for r in rows:
-            print(f"  {r['model_id']} group={r['model_group']} tag={r['model_tag']} ctx={r['default_context_length']}")
-        return 0
+    exit_code = 0
 
-    # 4) DB upsert
-    db_url = args.database_url or _sync_database_url()
-    engine = create_engine(db_url, echo=False)
-    Session = sessionmaker(bind=engine)
-    with Session() as session:
-        for r in rows:
-            existing = session.execute(
-                select(Model).where(Model.model_id == r["model_id"])
-            ).scalar_one_or_none()
-            if existing:
-                # Ensure rows under a local provider prefix get model_group with suffix and tag "small"
-                if _is_local_provider_model_id(str(existing.model_id)):
-                    group_val = _local_group_from_model_id(str(existing.model_id))
-                    existing.model_group = group_val  # type: ignore[assignment]
-                    existing.model_tag = "small"  # type: ignore[assignment]
-                    print(f"  Set group={group_val}, tag=small (exists) {r['model_id']}")
-                else:
-                    print(f"  Skipped (exists) {r['model_id']}")
-            else:
-                session.add(
-                    Model(
-                        model_id=r["model_id"],  # type: ignore[reportAttributeIssue]
-                        model_group=r["model_group"],  # type: ignore[reportAttributeIssue]
-                        model_tag=r["model_tag"],  # type: ignore[reportAttributeIssue]
-                        default_context_length=r["default_context_length"],  # type: ignore[reportAttributeIssue]
-                        is_default=r["is_default"],  # type: ignore[reportAttributeIssue]
-                        priority=r["priority"],  # type: ignore[reportAttributeIssue]
-                        is_active=True,  # type: ignore[reportAttributeIssue]
-                        base_url=r.get("base_url"),  # type: ignore[reportAttributeIssue]
-                        backend_model=r.get("backend_model"),  # type: ignore[reportAttributeIssue]
-                        api_key=r.get("api_key"),  # type: ignore[reportAttributeIssue]
-                        drop_params=r.get("drop_params", False),  # type: ignore[reportAttributeIssue]
-                    )
-                )
-                print(f"  Inserted {r['model_id']}")
-        session.commit()
-
-        # 5) Optional: write final litellm_config.yaml from base + all prefix entries (DB + API per combo)
-        if args.write_config:
-            base_path = base_config_path if base_config_path.exists() else output_config_path
-            base_data = proxy_config.load_base(base_path)
-            if provider_specs:
-                all_prefixes = [p[0] for p in provider_specs]
-                base_model_list = [
-                    m for m in base_data.get("model_list", [])
-                    if not any((m.get("model_name") or "").startswith(prefix) for prefix in all_prefixes)
-                ]
-                final_model_list = list(base_model_list)
-                for prefix, _provider_url, base_url in provider_specs:
-                    db_prefix_models = session.execute(
-                        select(Model).where(
-                            Model.model_id.startswith(prefix),  # type: ignore[arg-type]
-                            Model.is_active == True,
-                        )
-                    ).scalars().all()
-                    api_models = provider_models_by_prefix.get(prefix, [])
-                    default_base = base_url if base_url.startswith("http") else "http://localhost:8000"
-                    entries = proxy_config.build_final_model_list(
-                        prefix=prefix,
-                        base_model_list=[],
-                        db_models=db_prefix_models,
-                        api_models=api_models,
-                        default_base_url=default_base,
-                        default_api_key="none",
-                    )
-                    final_model_list.extend(entries)
-                model_list = final_model_list
-            else:
-                model_list = base_data.get("model_list", [])
-            proxy_config.write_config_with_model_list(
+    if populate_requested:
+        # 1) Proxy config: base YAML and optional generate
+        base_config_path = args.base_config or _PROJECT_ROOT / "litellm_config_base.yaml"
+        output_config_path = args.config or _PROJECT_ROOT / "litellm_config.yaml"
+        proxy_config = ProxyConfigManager(base_config_path=base_config_path, output_config_path=output_config_path)
+        if args.generate_config:
+            proxy_config.generate_from_template(
+                template_path=args.template,
                 output_path=output_config_path,
-                base_data=base_data,
-                model_list=model_list,
             )
-            print(f"Wrote final config to {output_config_path}")
-    print("Done.")
-    return 0
+            print(f"Generated config at {output_config_path}")
+        # Load model_list from base (or full config if base missing) for populating DB
+        config_models = proxy_config.get_model_list(base_config_path if base_config_path.exists() else output_config_path)
+        print(f"Loaded {len(config_models)} models from config")
+
+        # 2) Build rows from config, then merge each provider combo one by one
+        rows = _build_models_from_config_only(config_models)
+        provider_models_by_prefix: dict[str, list[ProviderModel]] = {}
+        for prefix, provider_url, base_url in provider_specs:
+            try:
+                client = LLMProviderClient(base_url=provider_url)
+                provider_models = client.list_models(type_filter="llm")
+                provider_models_by_prefix[prefix] = provider_models
+                _add_provider_models(rows, prefix, provider_models, base_url)
+                print(f"Loaded {len(provider_models)} LLM models from {provider_url} (prefix {prefix!r}, base_url {base_url})")
+            except Exception as e:
+                print(f"Provider at {provider_url} not available ({e}); skipping prefix {prefix!r}")
+                provider_models_by_prefix[prefix] = []
+        print(f"Merged {len(rows)} model rows to upsert")
+
+        if args.dry_run:
+            for r in rows:
+                print(f"  {r['model_id']} group={r['model_group']} tag={r['model_tag']} ctx={r['default_context_length']}")
+        else:
+            # 4) DB upsert
+            db_url = args.database_url or _sync_database_url()
+            engine = create_engine(db_url, echo=False)
+            Session = sessionmaker(bind=engine)
+            with Session() as session:
+                for r in rows:
+                    existing = session.execute(
+                        select(Model).where(Model.model_id == r["model_id"])
+                    ).scalar_one_or_none()
+                    if existing:
+                        # Ensure rows under a local provider prefix get model_group with suffix and tag "small"
+                        if _is_local_provider_model_id(str(existing.model_id)):
+                            group_val = _local_group_from_model_id(str(existing.model_id))
+                            existing.model_group = group_val  # type: ignore[assignment]
+                            existing.model_tag = "small"  # type: ignore[assignment]
+                            print(f"  Set group={group_val}, tag=small (exists) {r['model_id']}")
+                        else:
+                            print(f"  Skipped (exists) {r['model_id']}")
+                    else:
+                        session.add(
+                            Model(
+                                model_id=r["model_id"],  # type: ignore[reportAttributeIssue]
+                                model_group=r["model_group"],  # type: ignore[reportAttributeIssue]
+                                model_tag=r["model_tag"],  # type: ignore[reportAttributeIssue]
+                                default_context_length=r["default_context_length"],  # type: ignore[reportAttributeIssue]
+                                is_default=r["is_default"],  # type: ignore[reportAttributeIssue]
+                                priority=r["priority"],  # type: ignore[reportAttributeIssue]
+                                is_active=True,  # type: ignore[reportAttributeIssue]
+                                base_url=r.get("base_url"),  # type: ignore[reportAttributeIssue]
+                                backend_model=r.get("backend_model"),  # type: ignore[reportAttributeIssue]
+                                api_key=r.get("api_key"),  # type: ignore[reportAttributeIssue]
+                                drop_params=r.get("drop_params", False),  # type: ignore[reportAttributeIssue]
+                            )
+                        )
+                        print(f"  Inserted {r['model_id']}")
+                session.commit()
+
+                # 5) Optional: write final litellm_config.yaml from base + all prefix entries (DB + API per combo)
+                if args.write_config:
+                    base_path = base_config_path if base_config_path.exists() else output_config_path
+                    base_data = proxy_config.load_base(base_path)
+                    if provider_specs:
+                        all_prefixes = [p[0] for p in provider_specs]
+                        base_model_list = [
+                            m for m in base_data.get("model_list", [])
+                            if not any((m.get("model_name") or "").startswith(prefix) for prefix in all_prefixes)
+                        ]
+                        final_model_list = list(base_model_list)
+                        for prefix, _provider_url, base_url in provider_specs:
+                            db_prefix_models = session.execute(
+                                select(Model).where(
+                                    Model.model_id.startswith(prefix),  # type: ignore[arg-type]
+                                    Model.is_active == True,
+                                )
+                            ).scalars().all()
+                            api_models = provider_models_by_prefix.get(prefix, [])
+                            default_base = base_url if base_url.startswith("http") else "http://localhost:8000"
+                            entries = proxy_config.build_final_model_list(
+                                prefix=prefix,
+                                base_model_list=[],
+                                db_models=db_prefix_models,
+                                api_models=api_models,
+                                default_base_url=default_base,
+                                default_api_key="none",
+                            )
+                            final_model_list.extend(entries)
+                        model_list = final_model_list
+                    else:
+                        model_list = base_data.get("model_list", [])
+                    proxy_config.write_config_with_model_list(
+                        output_path=output_config_path,
+                        base_data=base_data,
+                        model_list=model_list,
+                    )
+                    print(f"Wrote final config to {output_config_path}")
+            print("Populate done.")
+
+    if remote_audit:
+        print()
+        exit_code = max(
+            exit_code,
+            _run_remote_stale_audit(
+                config_path=output_config_path,
+                database_url=args.database_url,
+                purge=args.purge_remote_missing_from_config,
+            ),
+        )
+
+    if local_audit:
+        print()
+        exit_code = max(
+            exit_code,
+            _run_local_stale_audit(
+                provider_specs=provider_specs,
+                database_url=args.database_url,
+                purge=args.purge_local_missing_from_provider,
+            ),
+        )
+
+    return exit_code
 
 
 if __name__ == "__main__":

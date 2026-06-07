@@ -18,11 +18,20 @@ from litellm.proxy.proxy_server import DualCache
 dojo_path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(dojo_path))
 
-from dojo.models.router_model import Token, Workspace, User, Model
+from dojo.models.router_model import Token, Workspace, User, Model, RequestLog
+from dojo.models.functions import generate_ulid
 from .accounts import LedgerManager
 from .llm_provider import LLMProviderClient
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:\t%(message)s")
+
+# Default cost when model is not in LiteLLM's model_prices_and_context_window.json
+DEFAULT_UNMAPPED_MODEL_COST = Decimal("0.0001")
+MAX_FALLBACK_SEQUENCE_LENGTH = 5
+
+
+def _build_fallback_sequence(model: str, fallbacks: List[str]) -> List[str]:
+    return ([model] + list(fallbacks))[:MAX_FALLBACK_SEQUENCE_LENGTH]
 
 
 def _base_url_to_provider_url(base_url: str) -> str:
@@ -176,14 +185,25 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
 
     # Store workspace
     user_api_key_dict.org_id = workspace.id
-    data['metadata']['user_api_key_org_id'] = workspace.id
+    data.setdefault("metadata", {})
+    data["metadata"]["user_api_key_org_id"] = workspace.id
+    data["metadata"]["dojo_request_id"] = generate_ulid()
 
     # Dynamic auto: "auto", "auto/<group>", or "auto/<group>/<tag>"
     if data["model"] == "auto" or (isinstance(data["model"], str) and data["model"].startswith("auto/")):
         primary, fallbacks = await _resolve_auto_model(session, data["model"])
-        logging.warning(f"Resolved: {data['model']} > {primary} fallbacks: {', '.join(fallbacks)}")
+        #logging.warning(f"Resolved: {data['model']} > {primary} fallbacks: {', '.join(fallbacks)}")
         data["model"] = primary
         data["fallbacks"] = fallbacks
+
+    model = data.get("model")
+    fallbacks = data.get("fallbacks") or []
+    if model:
+        sequence = _build_fallback_sequence(model, fallbacks)
+        data["model"] = sequence[0]
+        data["fallbacks"] = sequence[1:]
+        data.setdefault("metadata", {})
+        data["metadata"]["dojo_fallback_sequence"] = sequence
 
     # Clear token and workspace information from request state
     request.state.dojo_token = None
@@ -192,15 +212,159 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
     # Close session connection
     await session.close()
 
-# Default cost when model is not in LiteLLM's model_prices_and_context_window.json
-DEFAULT_UNMAPPED_MODEL_COST = Decimal("0.0001")
+
+
+def _extract_workspace_id(kwargs) -> bytes | None:
+    metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
+    return metadata.get("user_api_key_org_id")
+
+
+def _extract_error_details(kwargs) -> dict | None:
+    exception = kwargs.get("exception")
+    if exception is not None:
+        details = {
+            "type": type(exception).__name__,
+            "message": str(exception),
+        }
+        status_code = getattr(exception, "status_code", None)
+        if status_code is not None:
+            details["status_code"] = status_code
+        return details
+
+    standard = kwargs.get("standard_logging_object")
+    if isinstance(standard, dict):
+        error_str = standard.get("error_str")
+        if error_str:
+            return {"message": error_str}
+
+    return None
+
+
+def _extract_request_id(kwargs) -> bytes | None:
+    metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
+    return metadata.get("dojo_request_id")
+
+
+def _extract_internal_model_name(kwargs) -> str | None:
+    """Resolve the internal model_id used in dojo_fallback_sequence."""
+    metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
+    model_group = metadata.get("model_group")
+    if isinstance(model_group, str) and model_group:
+        return model_group
+
+    standard = kwargs.get("standard_logging_object")
+    if isinstance(standard, dict):
+        standard_model_group = standard.get("model_group")
+        if isinstance(standard_model_group, str) and standard_model_group:
+            return standard_model_group
+
+    sequence = metadata.get("dojo_fallback_sequence") or []
+    external_model = kwargs.get("model")
+    if isinstance(external_model, str) and external_model in sequence:
+        return external_model
+
+    return external_model if isinstance(external_model, str) else None
+
+
+def _extract_fallback_sequence(kwargs) -> list[str] | None:
+    metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
+    sequence = metadata.get("dojo_fallback_sequence")
+    if sequence:
+        return list(sequence)[:MAX_FALLBACK_SEQUENCE_LENGTH]
+
+    body = (
+        kwargs.get("litellm_params", {})
+        .get("proxy_server_request", {})
+        .get("body", {})
+    )
+    model = kwargs.get("model") or body.get("model")
+    fallbacks = body.get("fallbacks") or kwargs.get("fallbacks") or []
+    if model:
+        return _build_fallback_sequence(model, fallbacks)
+    return None
+
+
+def _usage_field(usage, key: str):
+    if usage is None:
+        return None
+    if isinstance(usage, dict):
+        return usage.get(key)
+    return getattr(usage, key, None)
+
+
+def _extract_token_metadata(response_obj=None, kwargs=None) -> dict | None:
+    usage = getattr(response_obj, "usage", None) if response_obj is not None else None
+    if usage is None and kwargs is not None:
+        standard = kwargs.get("standard_logging_object")
+        if isinstance(standard, dict):
+            usage = standard.get("usage")
+
+    if usage is None:
+        return None
+
+    metadata = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = _usage_field(usage, key)
+        if value is not None:
+            metadata[key] = value
+
+    details = _usage_field(usage, "prompt_tokens_details")
+    cached_tokens = _usage_field(details, "cached_tokens")
+    if cached_tokens is not None:
+        metadata["cached_tokens"] = cached_tokens
+
+    return metadata or None
+
+
+async def _log_request(
+    workspace_id: bytes | None,
+    request_id: bytes | None,
+    model: str | None,
+    is_success: bool,
+    error_details: dict | None = None,
+    fallback_sequence: list[str] | None = None,
+    token_metadata: dict | None = None,
+) -> None:
+    if workspace_id is None or request_id is None or not model:
+        return
+
+    dburl = os.environ["DATABASE_ASYNC_URL"]
+    async_engine = create_async_engine(dburl)
+    async_session = async_sessionmaker(async_engine, expire_on_commit=False)
+
+    async with async_session() as session:
+        session.add(
+            RequestLog(
+                workspace_id=workspace_id,
+                request_id=request_id,
+                model=model,
+                is_success=is_success,
+                fallback_sequence=fallback_sequence,
+                token_metadata=token_metadata,
+                error_details=error_details if not is_success else None,
+            )
+        )
+        await session.commit()
+        await session.close()
+
 
 async def post_call_hook(kwargs, response_obj, start_time, end_time):
     #logging.warning(f"post_call_hook kwargs: {pprint.pformat(kwargs)}")
-    workspace_id = kwargs.get("litellm_params").get("metadata").get("user_api_key_org_id")
+    workspace_id = _extract_workspace_id(kwargs)
     provider = kwargs.get("custom_llm_provider")
     provider_model = kwargs.get("model")
+    internal_model = _extract_internal_model_name(kwargs)
     model_requested = kwargs.get("litellm_params").get("proxy_server_request").get("body").get("model")
+    token_metadata = _extract_token_metadata(response_obj=response_obj, kwargs=kwargs)
+
+    await _log_request(
+        workspace_id,
+        _extract_request_id(kwargs),
+        internal_model,
+        is_success=True,
+        fallback_sequence=_extract_fallback_sequence(kwargs),
+        token_metadata=token_metadata,
+    )
     try:
         response_cost = Decimal(litellm.completion_cost(completion_response=response_obj)).quantize(Decimal('0.0000000001'))
     except Exception as e:
@@ -230,14 +394,34 @@ async def post_call_hook(kwargs, response_obj, start_time, end_time):
         await session.commit()
         await session.close()
         new_balance = new_balance.quantize(Decimal('0.0000000001'))
-        usage = getattr(response_obj, "usage", None)
-        total_tokens = getattr(usage, "total_tokens", None) if usage else None
-        prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
-        completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
-        details = getattr(usage, "prompt_tokens_details", None) if usage else None
-        cached_tokens = getattr(details, "cached_tokens", None) if details else None
         logging.warning(
             "Success - workspace:%s model:%s cost:%s balance:%s tokens:%s (in: %s, out: %s, cached: %s)",
-            str(ULID(bytes(workspace_id))), model_requested, response_cost, new_balance,
-            total_tokens, prompt_tokens, completion_tokens, cached_tokens,
+            str(ULID(bytes(workspace_id))), internal_model or model_requested, response_cost, new_balance,
+            token_metadata.get("total_tokens") if token_metadata else None,
+            token_metadata.get("prompt_tokens") if token_metadata else None,
+            token_metadata.get("completion_tokens") if token_metadata else None,
+            token_metadata.get("cached_tokens") if token_metadata else None,
         )
+
+
+async def failure_call_hook(kwargs, response_obj, start_time, end_time):
+    workspace_id = _extract_workspace_id(kwargs)
+    internal_model = _extract_internal_model_name(kwargs)
+    error_details = _extract_error_details(kwargs)
+
+    await _log_request(
+        workspace_id,
+        _extract_request_id(kwargs),
+        internal_model,
+        is_success=False,
+        error_details=error_details,
+        fallback_sequence=_extract_fallback_sequence(kwargs),
+        token_metadata=_extract_token_metadata(response_obj=response_obj, kwargs=kwargs),
+    )
+
+    logging.warning(
+        "Failure - workspace:%s model:%s error:%s",
+        str(ULID(bytes(workspace_id))) if workspace_id else None,
+        internal_model,
+        error_details,
+    )

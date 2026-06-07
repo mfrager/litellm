@@ -97,3 +97,4 @@ litellm_config.yaml.bak
 data/
 *.swp
 *.swo
+dojo/migrations/versions/*.py

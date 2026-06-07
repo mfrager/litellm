@@ -70,3 +70,30 @@ class Token(CommonBase, Base):
 
     workspace = relationship("Workspace", foreign_keys=[workspace_id], primaryjoin="Token.workspace_id == Workspace.id")
 
+
+class RequestLog(CommonBase, Base):
+    """Tracks each LLM request outcome without storing request or response payloads."""
+
+    __tablename__ = 'router_request_log'
+
+    id = Column[bytes](ULID_BINARY, primary_key=True, default=generate_ulid)
+    request_id = Column[bytes](ULID_BINARY, nullable=False, index=True)     # shared across log rows for one client request
+    workspace_id = Column[bytes](ULID_BINARY, nullable=False, index=True)
+    model = Column[str](String(255), nullable=False)                          # internal model_id (matches fallback_sequence)
+    is_success = Column[bool](Boolean, nullable=False)
+    fallback_sequence = Column(JSON, nullable=True)                         # ordered model ids tried/planned for fallback
+    token_metadata = Column(JSON, nullable=True)                            # prompt/completion/total/cached token counts
+    error_details = Column(JSON, nullable=True)                             # populated when is_success is False
+
+    workspace = relationship(
+        "Workspace",
+        foreign_keys=[workspace_id],
+        primaryjoin="RequestLog.workspace_id == Workspace.id",
+    )
+
+    __table_args__ = (
+        Index('idx_request_log_workspace_ts', 'workspace_id', 'ts_created'),
+        Index('idx_request_log_model', 'model'),
+        Index('idx_request_log_is_success', 'is_success'),
+    )
+

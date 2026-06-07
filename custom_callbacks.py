@@ -11,7 +11,7 @@ _project_root = Path(__file__).resolve().parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from dojo.router.handlers import pre_call_hook, post_call_hook
+from dojo.router.handlers import pre_call_hook, post_call_hook, failure_call_hook
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s:\t%(message)s")
 
@@ -24,8 +24,8 @@ class DojoRouterHandler(CustomLogger):
         #logging.warning("response_obj: " + pprint.pformat(response_obj))
         await post_call_hook(kwargs, response_obj, start_time, end_time)
 
-    #async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-    #    pass
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        await failure_call_hook(kwargs, response_obj, start_time, end_time)
 
     #async def async_post_call_success_hook(self, data: dict, user_api_key_dict: UserAPIKeyAuth, response):
     #    pass
