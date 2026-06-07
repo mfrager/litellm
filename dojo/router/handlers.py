@@ -213,7 +213,6 @@ async def pre_call_hook(user_api_key_dict: UserAPIKeyAuth, cache: DualCache, dat
     await session.close()
 
 
-
 def _extract_workspace_id(kwargs) -> bytes | None:
     metadata = kwargs.get("litellm_params", {}).get("metadata") or {}
     return metadata.get("user_api_key_org_id")
